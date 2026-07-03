@@ -34,6 +34,9 @@ export function useVoiceChannelPresence(
       queryKey: ['voiceParticipants', c.id],
       queryFn: () => listVoiceParticipants(c.id),
       staleTime: 30_000,
+      // Кэш живёт на WS-патчах; возврат в окно — дешёвый повод самопочиниться,
+      // если какие-то события были пропущены.
+      refetchOnWindowFocus: true,
     })),
   })
 
@@ -43,9 +46,18 @@ export function useVoiceChannelPresence(
         event.t !== 'voice.join' && event.t !== 'voice.leave'
         && event.t !== 'voice.state' && event.t !== 'voice.mod'
       ) return
-      queryClient.setQueryData<VoiceParticipantsResponse>(
-        ['voiceParticipants', event.channelId],
-        (old) => {
+      const key = ['voiceParticipants', event.channelId]
+      void (async () => {
+        // Гонка «снапшот против патча»: если данные уже есть, а рефетч в
+        // полёте (сервер отдаёт его из 5-сек кэша), ответ queryFn может быть
+        // старше события и перезаписать патч — обрываем. ОБЯЗАТЕЛЬНО await:
+        // cancel с revert откатывает данные асинхронно, синхронный патч до
+        // отката был бы затёрт. Initial fetch (данных ещё нет) не трогаем:
+        // снапшот лучше, чем сфабрикованный патчами огрызок.
+        if (queryClient.getQueryData(key) !== undefined) {
+          await queryClient.cancelQueries({ queryKey: key })
+        }
+        queryClient.setQueryData<VoiceParticipantsResponse>(key, (old) => {
           const list = old?.participants ?? []
           switch (event.t) {
             case 'voice.join': {
@@ -85,8 +97,8 @@ export function useVoiceChannelPresence(
                 ),
               }
           }
-        },
-      )
+        })
+      })()
     })
   }, [queryClient])
 

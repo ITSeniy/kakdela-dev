@@ -1,8 +1,32 @@
-import { WebhookReceiver } from 'livekit-server-sdk'
+import { createHash } from 'node:crypto'
+
+import { WebhookEvent } from 'livekit-server-sdk'
+import { jwtVerify } from 'jose'
 import type { FastifyPluginAsync } from 'fastify'
 
 import { env } from '../env.js'
 import { alreadyProcessed, handleWebhookEvent } from '../media/webhook.js'
+
+// Проверяем подпись вебхука сами, а не через WebhookReceiver.receive: тот
+// зовёт jwtVerify без clockTolerance, а часы docker-VM (WSL2) после сна
+// Windows дрейфуют вперёд — LiveKit подписывает nbf «из будущего», и speedy
+// отбрасывал ВСЕ вебхуки с JWTClaimValidationFailed («nbf claim timestamp
+// check failed»), теряя voice.join/leave. Допуск 5 минут покрывает типичный
+// дрейф; sha256-хэш тела по-прежнему обязан совпадать байт в байт.
+const WEBHOOK_CLOCK_TOLERANCE = '5 minutes'
+
+async function verifyAndParseWebhook(body: string, authHeader: string): Promise<WebhookEvent> {
+  const secret = new TextEncoder().encode(env.LIVEKIT_API_SECRET)
+  const { payload } = await jwtVerify(authHeader, secret, {
+    issuer: env.LIVEKIT_API_KEY,
+    clockTolerance: WEBHOOK_CLOCK_TOLERANCE,
+  })
+  const bodyHash = createHash('sha256').update(body).digest('base64')
+  if (payload['sha256'] !== bodyHash) {
+    throw new Error('webhook body hash mismatch')
+  }
+  return WebhookEvent.fromJson(JSON.parse(body), { ignoreUnknownFields: true })
+}
 
 // Внутренние эндпоинты — вызываются другими сервисами (сейчас только LiveKit),
 // не пользовательскими клиентами. Прячем за `/api/internal/*` и не выставляем
@@ -20,8 +44,6 @@ export const internalRoutes: FastifyPluginAsync = async (app) => {
   }
   app.addContentTypeParser('application/json', { parseAs: 'string' }, rawString)
   app.addContentTypeParser('application/webhook+json', { parseAs: 'string' }, rawString)
-
-  const receiver = new WebhookReceiver(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET)
 
   app.post('/internal/livekit-webhook', async (req, reply) => {
     const body = req.body
@@ -44,7 +66,7 @@ export const internalRoutes: FastifyPluginAsync = async (app) => {
 
     let event
     try {
-      event = await receiver.receive(body, authHeader)
+      event = await verifyAndParseWebhook(body, authHeader)
     } catch (err) {
       app.log.warn({ err }, 'livekit-webhook: invalid signature')
       return reply.code(401).send({

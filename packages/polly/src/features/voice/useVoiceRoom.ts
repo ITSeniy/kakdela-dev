@@ -2,6 +2,8 @@ import { useCallback } from 'react'
 import { Track } from 'livekit-client'
 import type { Room } from 'livekit-client'
 
+import type { VoiceParticipantsResponse } from '@kakdela/ginzu/api-types'
+
 import { ApiError } from '../../lib/api.js'
 import {
   applyDeafenVolume,
@@ -11,8 +13,10 @@ import {
   getActiveRoom,
   installVoiceRoom,
 } from '../../lib/livekit.js'
+import { queryClient } from '../../lib/query.js'
+import { useAuthStore } from '../auth/store.js'
 import { playSound } from '../sounds/sounds.js'
-import { joinDmVoice, joinVoiceChannel, leaveDmVoice, leaveVoiceChannel } from './api.js'
+import { joinDmVoice, joinVoiceChannel, leaveDmVoice, leaveVoiceChannel, reportVoiceState } from './api.js'
 import { useVoiceInputSettings } from './inputSettings.js'
 import { audioCaptureOptions } from './noiseSettings.js'
 import { useVoiceStore } from './store.js'
@@ -33,8 +37,10 @@ export interface UseVoiceRoom {
 
 // Куда подключаемся: серверный голос-канал или личный звонок (T-087). От этого
 // зависят join/leave-эндпоинты и контекст в store (шапка/док/тост).
+// silent — не играть 'voice-join' по подключении: у программных переходов
+// (админ перенёс) свой звук, и они смешивались.
 type JoinTarget =
-  | { kind: 'channel'; channelId: string }
+  | { kind: 'channel'; channelId: string; silent?: boolean }
   | { kind: 'dm'; channelId: string; peer: DmCallPeer }
 
 function leaveForTarget(target: JoinTarget): Promise<void> {
@@ -74,11 +80,11 @@ function enqueueVoiceOp(action: () => Promise<void>): Promise<void> {
  * (админ перенёс) и прочих программных переходов. Та же очередь, что у
  * hook-версии join.
  */
-export function joinVoiceRoom(channelId: string): Promise<void> {
+export function joinVoiceRoom(channelId: string, opts?: { silent?: boolean }): Promise<void> {
   // Бампаем seq СИНХРОННО — чтобы любая уже-стоящая в очереди операция
   // прочитала актуальный «победитель», ещё не дойдя до своей работы.
   const seq = ++joinSequence
-  return enqueueVoiceOp(() => runJoin({ kind: 'channel', channelId }, seq))
+  return enqueueVoiceOp(() => runJoin({ kind: 'channel', channelId, silent: opts?.silent }, seq))
 }
 
 /** Подключиться к личному звонку (T-087) — та же очередь, что у join канала. */
@@ -99,6 +105,14 @@ export function useVoiceRoom(): UseVoiceRoom {
   return { join, joinDm, leave, toggleMute, toggleDeafen }
 }
 
+/** Fire-and-forget репорт своего mute-тумблера серверу — для иконок в
+    сайдбаре у тех, кто вне канала (в DM-звонке некому вещать). */
+export function reportSelfMuted(muted: boolean): void {
+  const { activeChannelId, activeContext } = useVoiceStore.getState()
+  if (!activeChannelId || activeContext === 'dm') return
+  reportVoiceState(activeChannelId, muted).catch(() => {})
+}
+
 /**
  * Тоггл микрофона без React-контекста — кнопки UI и горячие клавиши
  * (features/voice/hotkeys.ts) дёргают одну и ту же функцию.
@@ -114,6 +128,7 @@ export async function toggleMuteVoice(): Promise<void> {
   const { muted, deafened, setMuted, setDeafened } = useVoiceStore.getState()
   const nextMuted = !muted
   setMuted(nextMuted)
+  reportSelfMuted(nextMuted)
   playSound(nextMuted ? 'mute-on' : 'mute-off')
   if (deafened && !nextMuted) {
     setDeafened(false)
@@ -148,6 +163,7 @@ export async function toggleDeafenVoice(): Promise<void> {
     setMutedBeforeDeafen(muted)
     if (!muted) {
       setMuted(true)
+      reportSelfMuted(true)
       if (room) {
         try {
           await room.localParticipant.setMicrophoneEnabled(false)
@@ -164,6 +180,7 @@ export async function toggleDeafenVoice(): Promise<void> {
     // Глушили только наушниками — включаем мик обратно. Если мик был
     // заглушен отдельно до deafen — оставляем заглушенным.
     setMuted(false)
+    reportSelfMuted(false)
     if (room) {
       try {
         await room.localParticipant.setMicrophoneEnabled(true, audioCaptureOptions())
@@ -201,6 +218,7 @@ export async function retryMicrophone(): Promise<boolean> {
   try {
     await room.localParticipant.setMicrophoneEnabled(true, audioCaptureOptions())
     useVoiceStore.getState().setMuted(false)
+    reportSelfMuted(false)
     useVoiceStore.getState().setError(null)
     return true
   } catch (err) {
@@ -253,6 +271,30 @@ async function runJoin(target: JoinTarget, seq: number): Promise<void> {
   // LiveKit договорится handshake. После install мы пересоберём список
   // из room.remoteParticipants (это уже после `room.connect()` resolve'а).
   useVoiceStore.getState().applySnapshot(joinResponse.participants)
+
+  // Сидируем и кэш сайдбара (['voiceParticipants']): свой voice.join придёт
+  // только через вебхук LiveKit → speedy → WS, а до/без него зашедший не
+  // видел бы ни себя, ни остальных под каналом. Снапшот из ответа /join
+  // свежий (сервер берёт его напрямую из LiveKit), себя дописываем сами —
+  // на момент запроса мы к LiveKit ещё не подключены.
+  if (target.kind === 'channel') {
+    const me = useAuthStore.getState().user
+    const participants = joinResponse.participants.filter((p) => p.userId !== me?.id)
+    if (me) {
+      participants.push({
+        userId: me.id,
+        displayName: me.displayName,
+        isScreenSharing: false,
+        isMuted: useVoiceStore.getState().muted,
+        serverMuted: false,
+        serverDeafened: false,
+      })
+    }
+    queryClient.setQueryData<VoiceParticipantsResponse>(
+      ['voiceParticipants', channelId],
+      { participants },
+    )
+  }
 
   let room: Room
   try {
@@ -310,7 +352,7 @@ async function runJoin(target: JoinTarget, seq: number): Promise<void> {
   }
 
   useVoiceStore.getState().setStatus('connected')
-  playSound('voice-join')
+  if (!(target.kind === 'channel' && target.silent)) playSound('voice-join')
 }
 
 async function runLeave(): Promise<void> {
@@ -324,6 +366,20 @@ async function teardownActive(): Promise<void> {
   await disposeVoiceRoom()
   useVoiceStore.getState().reset()
   if (activeChannelId) {
+    // Мгновенно убираем себя из сайдбар-кэша покинутого канала. voice.leave
+    // придёт вебхуком LiveKit, но он может опоздать или потеряться (напр.,
+    // clock-skew docker-VM) — тогда под старым каналом остаётся призрак.
+    if (activeContext !== 'dm') {
+      const me = useAuthStore.getState().user
+      if (me) {
+        queryClient.setQueryData<VoiceParticipantsResponse>(
+          ['voiceParticipants', activeChannelId],
+          (old) => old
+            ? { participants: old.participants.filter((p) => p.userId !== me.id) }
+            : old,
+        )
+      }
+    }
     const leave = activeContext === 'dm'
       ? leaveDmVoice(activeChannelId)
       : leaveVoiceChannel(activeChannelId)

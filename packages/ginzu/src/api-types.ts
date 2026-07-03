@@ -740,6 +740,14 @@ export const VoiceModerateRequestSchema = z.object({
 })
 export type VoiceModerateRequest = z.infer<typeof VoiceModerateRequestSchema>
 
+// Само-репорт mute-тумблера участником ГС. LiveKit не шлёт вебхуков на
+// mute/unmute уже опубликованного трека — без репорта зрители вне канала
+// не узнают о переключении до рефетча.
+export const VoiceSelfStateRequestSchema = z.object({
+  muted: z.boolean(),
+})
+export type VoiceSelfStateRequest = z.infer<typeof VoiceSelfStateRequestSchema>
+
 export const VoiceJoinResponseSchema = z.object({
   token: z.string(),
   url: z.string(),

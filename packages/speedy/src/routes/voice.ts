@@ -7,6 +7,7 @@ import {
   VoiceJoinResponseSchema,
   VoiceModerateRequestSchema,
   VoiceParticipantsResponseSchema,
+  VoiceSelfStateRequestSchema,
   type VoiceParticipantPublic,
 } from '@kakdela/ginzu/api-types'
 
@@ -263,6 +264,58 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
 
       const participants = await getParticipantsCached(channelId)
       return reply.code(200).send({ participants })
+    },
+  )
+
+  // ───── POST /api/voice/:channelId/state ─────
+  //
+  // Само-репорт mute-тумблера. LiveKit не присылает вебхуков на mute/unmute
+  // уже опубликованного трека, поэтому без этого эндпоинта зрители ВНЕ
+  // канала не видят переключение до рефетча. Screen-состояние берём из
+  // живого LiveKit — событие voice.state несёт оба поля.
+  app.post(
+    '/voice/:channelId/state',
+    {
+      preHandler: app.authenticate,
+      schema: {
+        params: z.object({ channelId: z.string().uuid() }),
+        body: VoiceSelfStateRequestSchema,
+        response: {
+          204: z.null(),
+          401: ErrorBodySchema,
+          403: ErrorBodySchema,
+          404: ErrorBodySchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const { channelId } = req.params
+      const userId = req.authUser!.id
+
+      const channelRows = await db
+        .select({ serverId: channels.serverId, kind: channels.kind })
+        .from(channels)
+        .where(eq(channels.id, channelId))
+        .limit(1)
+      const channel = channelRows[0]
+      if (!channel || !channel.serverId || channel.kind !== 'voice') {
+        throw notFound('channel-not-found', 'voice channel not found')
+      }
+      await assertMember(userId, channel.serverId)
+
+      const me = (await listParticipants(channelId)).find((p) => p.userId === userId)
+      // Уже не в комнате (гонка с выходом) — молча принимаем, вещать не о ком.
+      if (!me) return reply.code(204).send(null)
+
+      await redis.del(participantsCacheKey(channelId))
+      await broadcastToServer(channel.serverId, {
+        t: 'voice.state',
+        channelId,
+        userId,
+        muted: req.body.muted,
+        screen: me.isScreenSharing,
+      })
+      return reply.code(204).send(null)
     },
   )
 

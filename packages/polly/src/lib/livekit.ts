@@ -802,26 +802,24 @@ function attachListeners(room: Room): void {
     } catch { /* чужой формат — игнорируем */ }
   })
 
+  // СВОЙ трек здесь не трогаем: store.muted — намерение пользователя, его
+  // пишут только сами действия (toggleMuteVoice, deafen, PTT, moderationSync).
+  // Админский mute глушит наш трек со стороны LiveKit, и TrackMuted прилетает
+  // РАНЬШЕ, чем WS voice.mod — запись store.muted отсюда портила снапшот
+  // mutedBeforeForced в moderationSync (и персистнутый тумблер), из-за чего
+  // «вернуть микрофон» не возвращал мик.
   room.on(RoomEvent.TrackMuted, (pub: TrackPublication, p: Participant) => {
     if (currentRoom !== room) return
     if (pub.source !== Track.Source.Microphone) return
-    if (p === room.localParticipant) {
-      store().setMuted(true)
-    } else {
-      store().patchParticipant(p.identity, { isMuted: true })
-    }
+    if (p === room.localParticipant) return
+    store().patchParticipant(p.identity, { isMuted: true })
   })
 
   room.on(RoomEvent.TrackUnmuted, (pub: TrackPublication, p: Participant) => {
     if (currentRoom !== room) return
     if (pub.source !== Track.Source.Microphone) return
-    if (p === room.localParticipant) {
-      if (!useVoiceStore.getState().deafened) {
-        store().setMuted(false)
-      }
-    } else {
-      store().patchParticipant(p.identity, { isMuted: false })
-    }
+    if (p === room.localParticipant) return
+    store().patchParticipant(p.identity, { isMuted: false })
   })
 
   room.on(

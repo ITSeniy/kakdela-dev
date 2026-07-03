@@ -14,12 +14,15 @@ const mocks = vi.hoisted(() => ({
   broadcastToServer: vi.fn(),
   broadcastToChannel: vi.fn(),
   listDmParticipants: vi.fn(),
+  listParticipants: vi.fn(),
 }))
 
 // guido тащит livekit-server-sdk + env — мокаем только то, что использует
-// webhook (listDmParticipants как источник истины «комната опустела?»).
+// webhook (listDmParticipants / listParticipants как источник истины
+// «кто сейчас в комнате?»).
 vi.mock('./guido.js', () => ({
   listDmParticipants: mocks.listDmParticipants,
+  listParticipants: mocks.listParticipants,
 }))
 
 vi.mock('../lib/redis.js', () => ({
@@ -160,13 +163,17 @@ describe('alreadyProcessed', () => {
 describe('handleWebhookEvent', () => {
   it('participant_joined → voice.join + voice.state, sadd, cache invalidated', async () => {
     voiceChannelOk()
+    // voice.state берётся из живого LiveKit, а не из снапшота события —
+    // вебхуки не упорядочены, снапшот бывает устаревшим.
+    mocks.listParticipants.mockResolvedValueOnce([
+      { userId: USER_ID, isMuted: false, isScreenSharing: true },
+    ])
     await handleWebhookEvent(
       buildEvent({
         event: 'participant_joined',
         room: buildRoom(),
         participant: buildParticipant([
-          { source: TrackSource.MICROPHONE, muted: false },
-          { source: TrackSource.SCREEN_SHARE },
+          { source: TrackSource.MICROPHONE, muted: true }, // stale-снапшот игнорируется
         ]),
       }),
     )
@@ -193,6 +200,7 @@ describe('handleWebhookEvent', () => {
 
   it('participant_left → voice.leave + srem + cache invalidated', async () => {
     voiceChannelOk()
+    mocks.listParticipants.mockResolvedValueOnce([]) // юзера в комнате уже нет
     await handleWebhookEvent(
       buildEvent({
         event: 'participant_left',
@@ -211,8 +219,28 @@ describe('handleWebhookEvent', () => {
     })
   })
 
+  it('stale participant_left (user re-joined) is ignored, cache still invalidated', async () => {
+    voiceChannelOk()
+    // LiveKit говорит, что юзер снова в комнате — left относится к старой
+    // сессии и пришёл с опозданием: не выкидываем живого участника.
+    mocks.listParticipants.mockResolvedValueOnce([{ userId: USER_ID }])
+    await handleWebhookEvent(
+      buildEvent({
+        event: 'participant_left',
+        room: buildRoom(),
+        participant: buildParticipant(),
+      }),
+    )
+    expect(mocks.srem).not.toHaveBeenCalled()
+    expect(mocks.broadcastToServer).not.toHaveBeenCalled()
+    expect(mocks.del).toHaveBeenCalledWith(
+      `voice:channel:${CHANNEL_ID}:participants-cache`,
+    )
+  })
+
   it('participant_connection_aborted treated the same as participant_left', async () => {
     voiceChannelOk()
+    mocks.listParticipants.mockResolvedValueOnce([])
     await handleWebhookEvent(
       buildEvent({
         event: 'participant_connection_aborted',
@@ -227,8 +255,11 @@ describe('handleWebhookEvent', () => {
     })
   })
 
-  it('track_published recomputes muted/screen from current tracks', async () => {
+  it('track_published recomputes muted/screen from live LiveKit state', async () => {
     voiceChannelOk()
+    mocks.listParticipants.mockResolvedValueOnce([
+      { userId: USER_ID, isMuted: true, isScreenSharing: false },
+    ])
     await handleWebhookEvent(
       buildEvent({
         event: 'track_published',
@@ -246,6 +277,24 @@ describe('handleWebhookEvent', () => {
       screen: false,
     })
     expect(mocks.sadd).not.toHaveBeenCalled()
+  })
+
+  it('track_published for user already gone → no voice.state, cache invalidated', async () => {
+    voiceChannelOk()
+    mocks.listParticipants.mockResolvedValueOnce([])
+    await handleWebhookEvent(
+      buildEvent({
+        event: 'track_published',
+        room: buildRoom(),
+        participant: buildParticipant([
+          { source: TrackSource.MICROPHONE, muted: false },
+        ]),
+      }),
+    )
+    expect(mocks.broadcastToServer).not.toHaveBeenCalled()
+    expect(mocks.del).toHaveBeenCalledWith(
+      `voice:channel:${CHANNEL_ID}:participants-cache`,
+    )
   })
 
   it('room_finished clears Redis state, no broadcast', async () => {

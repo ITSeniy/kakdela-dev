@@ -37,6 +37,15 @@ export async function listVoiceParticipants(
   return apiFetch<VoiceParticipantsResponse>(`/api/voice/${channelId}/participants`)
 }
 
+/** Само-репорт mute-тумблера — LiveKit не шлёт вебхуков на mute трека,
+    без репорта зрители вне канала не видят переключение до рефетча. */
+export async function reportVoiceState(channelId: string, muted: boolean): Promise<void> {
+  await apiFetch<void>(`/api/voice/${channelId}/state`, {
+    method: 'POST',
+    body: JSON.stringify({ muted }),
+  })
+}
+
 /** Админская модерация участника ГС: mute/deafen/kick/move. */
 export async function moderateVoice(
   channelId: string,

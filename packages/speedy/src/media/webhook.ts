@@ -13,7 +13,7 @@ import { channels, messages } from '../db/schema.js'
 import { db } from '../lib/db.js'
 import { redis } from '../lib/redis.js'
 import { broadcastToChannel, broadcastToServer } from '../ws/broadcast.js'
-import { listDmParticipants } from './guido.js'
+import { listDmParticipants, listParticipants } from './guido.js'
 
 // Имена комнат в guido — `voice-${channelId}`. Если webhook прилетел с
 // другим префиксом — это либо чужая комната, либо мы что-то неправильно
@@ -258,12 +258,17 @@ export async function handleWebhookEvent(
       await redis.sadd(roomUsersKey(channelId), userId)
       await invalidateParticipantsCache(channelId)
       await broadcastToServer(serverId, { t: 'voice.join', channelId, userId })
+      // Снапшот участника внутри события устаревает к моменту обработки, а
+      // вебхуки не упорядочены: track_published (мик появился) мог обогнать
+      // joined — тогда state из снапшота навечно показывал бы «muted» тем,
+      // кто вне канала. Читаем живое состояние LiveKit; снапшот — фолбэк.
+      const live = (await listParticipants(channelId)).find((p) => p.userId === userId)
       await broadcastToServer(serverId, {
         t: 'voice.state',
         channelId,
         userId,
-        muted: computeMutedFromTracks(event.participant),
-        screen: computeScreenFromTracks(event.participant),
+        muted: live?.isMuted ?? computeMutedFromTracks(event.participant),
+        screen: live?.isScreenSharing ?? computeScreenFromTracks(event.participant),
       })
       return
     }
@@ -274,6 +279,16 @@ export async function handleWebhookEvent(
       const serverId = await lookupServerIdForVoiceChannel(channelId)
       if (!serverId) return
       const userId = event.participant.identity
+      // Вебхуки не упорядочены: при быстром реконнекте left старой сессии
+      // может прийти ПОСЛЕ joined новой — слепой srem+voice.leave «выкинул»
+      // бы из UI живого участника. Сверяемся с актуальным состоянием LiveKit
+      // (тот же паттерн, что в handleDmRoomEvent).
+      const current = await listParticipants(channelId)
+      if (current.some((p) => p.userId === userId)) {
+        await invalidateParticipantsCache(channelId)
+        log.debug({ channelId, userId }, 'webhook: stale participant_left ignored (user re-joined)')
+        return
+      }
       await redis.srem(roomUsersKey(channelId), userId)
       // Серверный mute/deafen не должен пережить выход из канала.
       await redis.hdel(modStateKey(channelId), userId)
@@ -289,14 +304,17 @@ export async function handleWebhookEvent(
       if (!serverId) return
       const userId = event.participant.identity
       await invalidateParticipantsCache(channelId)
-      const muted = computeMutedFromTracks(event.participant)
-      const screen = computeScreenFromTracks(event.participant)
+      // Как и в participant_joined — не доверяем снапшоту из события,
+      // берём живое состояние. Участника уже нет — state вещать не о ком,
+      // voice.leave разберётся сам.
+      const live = (await listParticipants(channelId)).find((p) => p.userId === userId)
+      if (!live) return
       await broadcastToServer(serverId, {
         t: 'voice.state',
         channelId,
         userId,
-        muted,
-        screen,
+        muted: live.isMuted,
+        screen: live.isScreenSharing,
       })
       return
     }

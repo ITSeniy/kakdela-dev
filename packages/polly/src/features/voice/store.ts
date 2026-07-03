@@ -40,6 +40,10 @@ interface VoiceState {
   // пока админ не снимет. Не персистится — состояние живёт на сервере.
   forcedMuted: boolean
   forcedDeafened: boolean
+  // Был ли мик заглушен САМИМ клиентом до того, как админ форсировал мьют.
+  // Снятие форс-мьюта возвращает мик именно в это состояние, а не всегда
+  // «включено» — иначе админский unmute стирал бы собственный self-mute.
+  mutedBeforeForced: boolean
   screenSharing: boolean
   // Моя веб-камера включена (зеркалит реальную публикацию Camera-трека).
   cameraOn: boolean
@@ -73,6 +77,7 @@ interface VoiceActions {
   setMuted(muted: boolean): void
   setDeafened(deafened: boolean): void
   setMutedBeforeDeafen(m: boolean): void
+  setMutedBeforeForced(m: boolean): void
   setForced(muted: boolean, deafened: boolean): void
   setScreenSharing(s: boolean): void
   setCameraOn(on: boolean): void
@@ -101,6 +106,7 @@ const initialState: VoiceState = {
   mutedBeforeDeafen: false,
   forcedMuted: false,
   forcedDeafened: false,
+  mutedBeforeForced: false,
   screenSharing: false,
   cameraOn: false,
   pttHolding: false,
@@ -193,6 +199,10 @@ export const useVoiceStore = create<VoiceState & VoiceActions>()(persist((set) =
 
   setMutedBeforeDeafen(m) {
     set({ mutedBeforeDeafen: m })
+  },
+
+  setMutedBeforeForced(m) {
+    set({ mutedBeforeForced: m })
   },
 
   setForced(muted, deafened) {
