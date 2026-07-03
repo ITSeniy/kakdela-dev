@@ -11,7 +11,7 @@ import { Icon } from '../../components/Icon.js'
 import { renderMarkdownInline } from './markdown.js'
 
 interface MessagePreviewProps {
-  message: Pick<Message, 'content' | 'attachments' | 'forwarded'>
+  message: Pick<Message, 'content' | 'attachments' | 'forwarded' | 'gif' | 'sticker'>
   memberMap?: ReadonlyMap<string, MemberPublic>
   channelMap?: ReadonlyMap<string, Channel>
   emojiMap?: ReadonlyMap<string, CustomEmoji>
@@ -20,13 +20,27 @@ interface MessagePreviewProps {
 }
 
 function AttachmentThumb({ att }: { att: Attachment }) {
-  if (att.kind === 'image' || att.kind === 'video') {
+  if (att.kind === 'image') {
     return (
       <div className="relative w-12 h-12 rounded overflow-hidden border border-kd-border bg-kd-panel-alt shrink-0">
         <img src={att.thumbUrl ?? att.url} alt={att.originalName} className="w-full h-full object-cover" loading="lazy" />
-        {att.kind === 'video' && (
-          <span className="absolute inset-0 flex items-center justify-center text-white text-[12px] bg-black/30">▶</span>
-        )}
+      </div>
+    )
+  }
+  if (att.kind === 'video') {
+    // thumbUrl всегда null у видео (см. AttachmentSchema) — как и в
+    // AttachmentList, берём первый кадр напрямую через <video preload=metadata>.
+    return (
+      <div className="relative w-12 h-12 rounded overflow-hidden border border-kd-border bg-kd-stage shrink-0">
+        <video src={att.url} preload="metadata" muted playsInline className="w-full h-full object-cover pointer-events-none" />
+        <span className="absolute inset-0 flex items-center justify-center text-white text-[12px] bg-black/30">▶</span>
+      </div>
+    )
+  }
+  if (att.kind === 'audio') {
+    return (
+      <div className="w-12 h-12 rounded border border-kd-border bg-kd-panel-alt flex items-center justify-center text-kd-text-mute shrink-0">
+        <Icon.Speaker size={16} />
       </div>
     )
   }
@@ -46,8 +60,10 @@ export function MessagePreview({ message, memberMap, channelMap, emojiMap, clamp
     [message.content, memberMap, channelMap, emojiMap],
   )
   const attachments = message.attachments ?? []
+  const gif = message.gif ?? null
+  const sticker = message.sticker ?? null
   const clampCls = clampLines === 2 ? 'line-clamp-2' : 'line-clamp-3'
-  const empty = !html && attachments.length === 0
+  const empty = !html && attachments.length === 0 && !gif && !sticker
 
   return (
     <div className="flex flex-col gap-1.5 min-w-0">
@@ -68,6 +84,22 @@ export function MessagePreview({ message, memberMap, channelMap, emojiMap, clamp
           {attachments.length > 4 && (
             <span className="text-[10px] font-mono text-kd-text-mute">+{attachments.length - 4}</span>
           )}
+        </div>
+      )}
+      {gif && (
+        <div className="relative w-16 h-12 rounded overflow-hidden border border-kd-border bg-kd-stage shrink-0">
+          <img src={gif.previewUrl} alt="gif" className="w-full h-full object-cover" loading="lazy" />
+          <span className="absolute left-1 bottom-1 px-1 py-px rounded bg-kd-overlay-strong text-kd-stage-text text-[8px] font-mono font-bold tracking-wide select-none">
+            GIF
+          </span>
+        </div>
+      )}
+      {sticker && (
+        <div className="flex items-center gap-2">
+          <div className="w-12 h-12 rounded border border-kd-border bg-kd-panel-alt flex items-center justify-center overflow-hidden shrink-0">
+            <img src={sticker.imageUrl} alt={sticker.name} className="w-full h-full object-contain" loading="lazy" />
+          </div>
+          <span className="text-[11px] text-kd-text-mute truncate">стикер «{sticker.name}»</span>
         </div>
       )}
       {empty && (

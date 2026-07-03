@@ -499,7 +499,9 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
   }
 
   function handleDelete(id: string) {
-    // T-092: оптимистичное удаление с окном «отменить» (см. ChatScreen).
+    // Подтверждение уже показано (см. Message.confirmDelete) — тут только
+    // оптимистичное удаление с откатом при ошибке, без окна «отменить».
+    const snapshot = queryClient.getQueryData<MsgCache>(['messages', channelId])
     queryClient.setQueryData<MsgCache>(['messages', channelId], (old) => {
       if (!old) return old
       return {
@@ -510,19 +512,10 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
         })),
       }
     })
-    const timer = setTimeout(() => {
-      deleteMessage(id).catch((err) => {
-        toast.error('не удалось удалить сообщение')
-        console.error('[dm] delete failed', err)
-        void queryClient.invalidateQueries({ queryKey: ['messages', channelId] })
-      })
-    }, 6500)
-    toast.info('сообщение удалено', {
-      undo: () => {
-        clearTimeout(timer)
-        void queryClient.invalidateQueries({ queryKey: ['messages', channelId] })
-      },
-      duration: 6000,
+    deleteMessage(id).catch((err) => {
+      if (snapshot) queryClient.setQueryData(['messages', channelId], snapshot)
+      toast.error('не удалось удалить сообщение')
+      console.error('[dm] delete failed', err)
     })
   }
 

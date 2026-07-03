@@ -246,12 +246,24 @@ export function Message({
         title: 'удалить сообщение?',
         body: 'это действие необратимо — вложения тоже удалятся.',
         preview: (
-          <MessagePreview
-            message={message as IMessage}
-            memberMap={memberMap}
-            channelMap={channelMap}
-            emojiMap={emojiMap}
-          />
+          <div className="flex gap-2.5 items-start">
+            <Avatar name={name} avatarUrl={member?.avatarUrl ?? null} size={32} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-baseline gap-1.5 flex-wrap">
+                <span className="text-[13px] font-bold text-kd-text">{name}</span>
+                {role && <Badge variant="role">{role}</Badge>}
+                <span className="text-[10px] text-kd-text-mute font-mono">{time}</span>
+              </div>
+              <div className="mt-0.5">
+                <MessagePreview
+                  message={message as IMessage}
+                  memberMap={memberMap}
+                  channelMap={channelMap}
+                  emojiMap={emojiMap}
+                />
+              </div>
+            </div>
+          </div>
         ),
         confirmLabel: 'удалить',
         danger: true,

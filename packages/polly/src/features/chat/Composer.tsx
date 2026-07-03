@@ -769,7 +769,7 @@ export function Composer({
                 type="button"
                 title="гифки"
                 onClick={() => { setGifOpen((o) => !o); setPickerOpen(false); setStickerOpen(false) }}
-                className={`inline-flex items-center justify-center h-5 px-1.5 text-[10px] font-mono font-bold leading-none rounded border transition-colors ${gifOpen ? 'border-kd-accent text-kd-accent' : 'border-kd-border hover:text-kd-text-soft'}`}
+                className={`inline-flex items-center justify-center h-5 px-1.5 text-[10px] font-mono font-bold leading-none rounded ring-1 ring-inset transition-colors ${gifOpen ? 'ring-kd-accent text-kd-accent' : 'ring-kd-border hover:text-kd-text-soft'}`}
               >
                 GIF
               </button>
@@ -830,7 +830,7 @@ export function Composer({
           title={hasUploading ? 'ждём загрузку…' : undefined}
           className={isMobile
             ? 'w-9 h-9 rounded-full bg-kd-accent text-white flex items-center justify-center hover:bg-kd-accent-deep transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0'
-            : 'px-2.5 py-1 bg-kd-accent text-white text-[11px] font-semibold font-mono rounded hover:bg-kd-accent-deep transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0'}
+            : 'inline-flex items-center justify-center gap-1 h-6 px-2.5 bg-kd-accent text-white text-[11px] font-semibold font-mono leading-none rounded hover:bg-kd-accent-deep transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0'}
         >
           {isMobile ? <Icon.Send size={17} /> : 'send ⏎'}
         </button>

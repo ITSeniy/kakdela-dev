@@ -170,7 +170,9 @@ export function ThreadPanel({ threadId, parentChannelId, serverId }: ThreadPanel
   }
 
   function handleDelete(id: string) {
-    // T-092: оптимистичное удаление с окном «отменить» (см. ChatScreen).
+    // Подтверждение уже показано (см. Message.confirmDelete) — тут только
+    // оптимистичное удаление с откатом при ошибке, без окна «отменить».
+    const snapshot = queryClient.getQueryData<MsgCache>(['messages', threadId])
     queryClient.setQueryData<MsgCache>(['messages', threadId], (old) => {
       if (!old) return old
       return {
@@ -181,19 +183,10 @@ export function ThreadPanel({ threadId, parentChannelId, serverId }: ThreadPanel
         })),
       }
     })
-    const timer = setTimeout(() => {
-      deleteMessage(id).catch((err) => {
-        toast.error('не удалось удалить сообщение')
-        console.error('[thread] delete failed', err)
-        void queryClient.invalidateQueries({ queryKey: ['messages', threadId] })
-      })
-    }, 6500)
-    toast.info('сообщение удалено', {
-      undo: () => {
-        clearTimeout(timer)
-        void queryClient.invalidateQueries({ queryKey: ['messages', threadId] })
-      },
-      duration: 6000,
+    deleteMessage(id).catch((err) => {
+      if (snapshot) queryClient.setQueryData(['messages', threadId], snapshot)
+      toast.error('не удалось удалить сообщение')
+      console.error('[thread] delete failed', err)
     })
   }
 

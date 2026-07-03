@@ -172,8 +172,9 @@ export function VoiceCallChat({ serverId, channelId }: VoiceCallChatProps) {
   }
 
   function handleDelete(id: string) {
-    // Оптимистично прячем сообщение и даём окно «отменить»; реальный DELETE
-    // уходит только после истечения тоста (тот же паттерн, что T-092 в чате).
+    // Подтверждение уже показано (см. Message.confirmDelete) — тут только
+    // оптимистичное удаление с откатом при ошибке, без окна «отменить».
+    const snapshot = queryClient.getQueryData<MsgCache>(['messages', channelId])
     queryClient.setQueryData<MsgCache>(['messages', channelId], (old) => {
       if (!old) return old
       return {
@@ -184,19 +185,10 @@ export function VoiceCallChat({ serverId, channelId }: VoiceCallChatProps) {
         })),
       }
     })
-    const timer = setTimeout(() => {
-      deleteMessage(id).catch((err) => {
-        toast.error('не удалось удалить сообщение')
-        console.error('[voice-chat] delete failed', err)
-        void queryClient.invalidateQueries({ queryKey: ['messages', channelId] })
-      })
-    }, 6500)
-    toast.info('сообщение удалено', {
-      undo: () => {
-        clearTimeout(timer)
-        void queryClient.invalidateQueries({ queryKey: ['messages', channelId] })
-      },
-      duration: 6000,
+    deleteMessage(id).catch((err) => {
+      if (snapshot) queryClient.setQueryData(['messages', channelId], snapshot)
+      toast.error('не удалось удалить сообщение')
+      console.error('[voice-chat] delete failed', err)
     })
   }
 
