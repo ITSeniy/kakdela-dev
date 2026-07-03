@@ -411,7 +411,7 @@ function HeaderMenu({ profile, onClose }: { profile: UserProfile; onClose(): voi
               if (navigator.clipboard) void navigator.clipboard.writeText(`@${profile.username}`)
               setOpen(false)
             }}
-            className="w-full text-left px-3 py-1.5 text-[12px] text-kd-text hover:bg-kd-panel-alt transition-colors"
+            className="block w-full text-left px-3 py-1.5 text-[12px] text-kd-text hover:bg-kd-panel-alt transition-colors"
           >
             скопировать @ник
           </button>
@@ -423,7 +423,7 @@ function HeaderMenu({ profile, onClose }: { profile: UserProfile; onClose(): voi
                 onClose()
                 openSettings('profile')
               }}
-              className="w-full text-left px-3 py-1.5 text-[12px] text-kd-text hover:bg-kd-panel-alt transition-colors"
+              className="block w-full text-left px-3 py-1.5 text-[12px] text-kd-text hover:bg-kd-panel-alt transition-colors"
             >
               настройки профиля
             </button>

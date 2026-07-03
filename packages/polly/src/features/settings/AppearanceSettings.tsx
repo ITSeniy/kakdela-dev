@@ -2,21 +2,18 @@
 // Тема, акцентный цвет, плотность сообщений, скругление углов.
 
 import { Field } from '../../components/form/Field.js'
-import { Slider } from '../../components/form/Slider.js'
 import { Swatch } from '../../components/form/Swatch.js'
 import { Toggle } from '../../components/form/Toggle.js'
-import { ACCENTS, DEFAULT_RADIUS, UI_SCALES, useAppearance } from './appearance.js'
+import { ACCENTS, UI_SCALES, useAppearance } from './appearance.js'
 import { DensityPicker } from './DensityPicker.js'
 import { ThemePicker } from './ThemePicker.js'
 
 export function AppearanceSettings() {
   const accentId = useAppearance((s) => s.accentId)
-  const radius = useAppearance((s) => s.radius)
   const hoverHighlight = useAppearance((s) => s.hoverHighlight)
   const reduceMotion = useAppearance((s) => s.reduceMotion)
   const uiScale = useAppearance((s) => s.uiScale)
   const setAccent = useAppearance((s) => s.setAccent)
-  const setRadius = useAppearance((s) => s.setRadius)
   const setHoverHighlight = useAppearance((s) => s.setHoverHighlight)
   const setReduceMotion = useAppearance((s) => s.setReduceMotion)
   const setUiScale = useAppearance((s) => s.setUiScale)
@@ -68,18 +65,6 @@ export function AppearanceSettings() {
             )
           })}
         </div>
-      </Field>
-
-      <Field label="скругление углов" hint="0 — резкие, 12 — мягкие">
-        <Slider
-          label="радиус"
-          display={`${radius} px`}
-          value={radius}
-          min={0}
-          max={12}
-          onChange={setRadius}
-          hint={`по умолчанию для кнопок, аватаров, карточек${radius !== DEFAULT_RADIUS ? ` · стандарт ${DEFAULT_RADIUS}` : ''}`}
-        />
       </Field>
 
       <Field label="прочее">

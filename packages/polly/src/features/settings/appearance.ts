@@ -1,6 +1,6 @@
-// Внешний вид: акцентный цвет и скругление углов (designs/final-settings.jsx,
-// блоки «акцентный цвет» и «скругление углов»). Значения персистятся локально
-// и применяются inline-переменными на <html>, перекрывая tokens.css.
+// Внешний вид: акцентный цвет (designs/final-settings.jsx, блок «акцентный
+// цвет»). Значения персистятся локально и применяются inline-переменными на
+// <html>, перекрывая tokens.css.
 //
 // Акценты заданы одним hex'ом (база светлой темы); варианты для тёмной темы
 // и производные (deep/soft/bg) выводятся через HSL. Дефолтный «мох» не ставит
@@ -28,7 +28,6 @@ export const ACCENTS: AccentDef[] = [
 ]
 
 export const DEFAULT_ACCENT_ID = 'moss'
-export const DEFAULT_RADIUS = 6
 
 // Масштаб интерфейса — CSS zoom на <html> (Chromium: и WebView2, и браузер).
 // «Маленький» — прежний 100%, дефолт — 125%.
@@ -71,14 +70,12 @@ export function clampFixed(
 
 interface AppearanceState {
   accentId: string
-  radius: number
   /** Заливка строки под курсором (сообщения, участники голосовых). */
   hoverHighlight: boolean
   /** Ручное «уменьшить движение» поверх системного prefers-reduced-motion. */
   reduceMotion: boolean
   uiScale: UiScale
   setAccent(id: string): void
-  setRadius(radius: number): void
   setHoverHighlight(on: boolean): void
   setReduceMotion(on: boolean): void
   setUiScale(scale: UiScale): void
@@ -88,12 +85,10 @@ export const useAppearance = create<AppearanceState>()(
   persist(
     (set) => ({
       accentId: DEFAULT_ACCENT_ID,
-      radius: DEFAULT_RADIUS,
       hoverHighlight: true,
       reduceMotion: false,
       uiScale: DEFAULT_UI_SCALE,
       setAccent: (accentId) => set({ accentId }),
-      setRadius: (radius) => set({ radius: Math.min(12, Math.max(0, Math.round(radius))) }),
       setHoverHighlight: (hoverHighlight) => set({ hoverHighlight }),
       setReduceMotion: (reduceMotion) => set({ reduceMotion }),
       setUiScale: (uiScale) => set({ uiScale }),
@@ -147,10 +142,7 @@ const ACCENT_VARS = ['--kd-accent', '--kd-accent-deep', '--kd-accent-soft', '--k
 export function applyAppearance(): void {
   if (typeof document === 'undefined') return
   const root = document.documentElement
-  const { accentId, radius, uiScale, reduceMotion } = useAppearance.getState()
-
-  if (radius === DEFAULT_RADIUS) root.style.removeProperty('--kd-radius')
-  else root.style.setProperty('--kd-radius', `${radius}px`)
+  const { accentId, uiScale, reduceMotion } = useAppearance.getState()
 
   if (reduceMotion) root.setAttribute('data-reduce-motion', 'true')
   else root.removeAttribute('data-reduce-motion')

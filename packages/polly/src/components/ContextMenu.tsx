@@ -36,7 +36,10 @@ function MenuItem({
       type="button"
       disabled={entry.disabled}
       onClick={entry.disabled ? undefined : () => { entry.onClick(); onClose() }}
-      className={`w-full text-left px-3 py-1.5 text-[12px] transition-colors
+      // block обязателен: инлайн-блочные кнопки при shrink-to-fit ширине
+      // fixed-контейнера складываются в одну строку, и меню растягивается
+      // до суммы ширин всех пунктов.
+      className={`block w-full text-left px-3 py-1.5 text-[12px] transition-colors
         ${entry.disabled
           ? 'text-kd-text-mute cursor-not-allowed opacity-50'
           : entry.danger
