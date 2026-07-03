@@ -21,6 +21,7 @@ import {
 import { db } from '../lib/db.js'
 import { invites, serverMembers, sessions, users } from '../db/schema.js'
 import { env } from '../env.js'
+import { broadcastToServer } from '../ws/broadcast.js'
 
 const REFRESH_COOKIE = 'kd_refresh'
 
@@ -142,7 +143,25 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
         throw err
       }
 
-      await db.insert(serverMembers).values({ serverId: inviteRow.serverId, userId: inserted.id }).onConflictDoNothing()
+      const memberRows = await db
+        .insert(serverMembers)
+        .values({ serverId: inviteRow.serverId, userId: inserted.id })
+        .onConflictDoNothing()
+        .returning({ role: serverMembers.role, joinedAt: serverMembers.joinedAt })
+      // Уже подключённым участникам — событие для обновления списка. Сам
+      // новичок WS ещё не поднимал, hot-attach ему не нужен.
+      const member = memberRows[0]
+      if (member) {
+        void broadcastToServer(inviteRow.serverId, {
+          t: 'member.join',
+          member: {
+            serverId: inviteRow.serverId,
+            userId:   inserted.id,
+            role:     member.role,
+            joinedAt: member.joinedAt.toISOString(),
+          },
+        })
+      }
 
       const { ipAddress, userAgent } = clientMeta(req)
       const { accessToken, refresh } = await issueSession(inserted.id, ipAddress, userAgent)

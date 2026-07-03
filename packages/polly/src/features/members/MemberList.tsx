@@ -227,6 +227,9 @@ export function MemberList({ serverId, className }: MemberListProps) {
     queryFn: () => listMembers(serverId!),
     enabled: serverId !== null,
     staleTime: 60_000,
+    // Статусы/роли живут на WS-патчах; возврат в окно — дешёвый повод
+    // самопочиниться, если события были пропущены.
+    refetchOnWindowFocus: true,
   })
 
   // Каналы нужны, чтобы понять, кто сейчас в голосе (группа «в голосе»).
@@ -254,6 +257,11 @@ export function MemberList({ serverId, className }: MemberListProps) {
       }
       // Кто-то покинул/выгнан — обновим список участников.
       if (event.t === 'member.leave' && event.serverId === serverId) {
+        void queryClient.invalidateQueries({ queryKey: ['members', serverId] })
+        return
+      }
+      // Новый участник вступил по инвайту.
+      if (event.t === 'member.join' && event.member.serverId === serverId) {
         void queryClient.invalidateQueries({ queryKey: ['members', serverId] })
         return
       }

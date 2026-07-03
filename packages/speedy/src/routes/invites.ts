@@ -18,7 +18,27 @@ import { env } from '../env.js'
 import { audit } from '../lib/audit.js'
 import { db } from '../lib/db.js'
 import { assertPermission } from '../lib/permissions.js'
-import { broadcastToChannel } from '../ws/broadcast.js'
+import { broadcastToChannel, broadcastToServer } from '../ws/broadcast.js'
+import { registry } from '../ws/registry.js'
+
+/**
+ * Hot-attach живых соединений свежевступившего участника на сервер и все его
+ * каналы. Подписки выдаются на hello — без этого новый участник не получит
+ * ни одного события по серверу (msg.new, presence, voice.*, role.update…)
+ * до пересоздания сокета.
+ */
+async function attachUserToServer(userId: string, serverId: string): Promise<void> {
+  const conns = registry.forUser(userId)
+  if (conns.length === 0) return
+  const chRows = await db
+    .select({ id: channels.id })
+    .from(channels)
+    .where(eq(channels.serverId, serverId))
+  for (const conn of conns) {
+    registry.subscribeServer(conn, serverId)
+    for (const ch of chRows) registry.subscribeChannel(conn, ch.id)
+  }
+}
 
 /**
  * Системное сообщение «участник присоединился» в канал по умолчанию сервера
@@ -332,16 +352,40 @@ export const invitesRoutes: FastifyPluginAsyncZod = async (app) => {
         .insert(serverMembers)
         .values({ serverId: row.serverId, userId })
         .onConflictDoNothing()
-        .returning({ userId: serverMembers.userId })
+        .returning({
+          userId:   serverMembers.userId,
+          role:     serverMembers.role,
+          joinedAt: serverMembers.joinedAt,
+        })
+
+      // Hot-attach до broadcast'ов, чтобы свежий участник увидел и своё
+      // системное сообщение о вступлении. При повторном accept подписки уже
+      // есть — операция идемпотентна и дёшева.
+      try {
+        await attachUserToServer(userId, row.serverId)
+      } catch (err) {
+        req.log.warn({ err, serverId: row.serverId, userId }, 'ws hot-attach on join failed')
+      }
 
       // Только при ПЕРВОМ вступлении (не при повторном accept) — системное
       // сообщение в канал. Best-effort: падение тут не должно ломать accept.
-      if (memberInsert[0]) {
+      const inserted = memberInsert[0]
+      if (inserted) {
         try {
           await postJoinMessage(row.serverId, userId)
         } catch (err) {
           req.log.warn({ err, serverId: row.serverId, userId }, 'join system message failed')
         }
+        // Остальным участникам — событие для обновления списка участников.
+        void broadcastToServer(row.serverId, {
+          t: 'member.join',
+          member: {
+            serverId: row.serverId,
+            userId:   inserted.userId,
+            role:     inserted.role,
+            joinedAt: inserted.joinedAt.toISOString(),
+          },
+        })
       }
 
       return reply.code(200).send({ serverId: row.serverId })

@@ -23,6 +23,15 @@ class Registry {
     this.addToMap(this.byChannel, channelId, conn)
   }
 
+  // Подписать существующее соединение на сервер — используется при вступлении
+  // по инвайту уже после hello, иначе новый участник не получает ни одного
+  // server-события (presence, voice.*, role.update…) до реконнекта.
+  subscribeServer(conn: Connection, serverId: string): void {
+    if (conn.subscribedServers.has(serverId)) return
+    conn.subscribedServers.add(serverId)
+    this.addToMap(this.byServer, serverId, conn)
+  }
+
   remove(conn: Connection): void {
     this.removeFromMap(this.byUser, conn.userId, conn)
     for (const channelId of conn.subscribedChannels) {
