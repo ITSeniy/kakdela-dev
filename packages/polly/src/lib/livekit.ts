@@ -33,6 +33,58 @@ let currentRoom: Room | null = null
 let audioContainer: HTMLDivElement | null = null
 const attachedAudioElements = new Map<string, HTMLMediaElement>()
 
+// ───── Буст громкости выше 100% ─────
+//
+// HTMLMediaElement.volume ограничен диапазоном [0,1] — присвоение вне него
+// кидает IndexSizeError. Для 100-200% прогоняем сырой MediaStream через
+// GainNode (гейн умеет любое значение) и отдаём результат ТОМУ ЖЕ audio-
+// элементу — sink (setSinkId), уже назначенный на него, продолжает
+// действовать, поэтому выбор колонок не ломается. Ниже 100% остаёмся на
+// обычном el.volume — дешевле и не тратит лишний AudioContext на участника.
+interface VolumeBoost {
+  ctx: AudioContext
+  source: MediaStreamAudioSourceNode
+  gain: GainNode
+  dest: MediaStreamAudioDestinationNode
+  rawStream: MediaStream
+}
+const volumeBoosts = new Map<string, VolumeBoost>()
+
+function teardownVolumeBoost(sid: string, el: HTMLMediaElement): void {
+  const boost = volumeBoosts.get(sid)
+  if (!boost) return
+  volumeBoosts.delete(sid)
+  el.srcObject = boost.rawStream
+  void el.play().catch(() => { /* ignore */ })
+  try { boost.source.disconnect(); boost.gain.disconnect() } catch { /* ignore */ }
+  void boost.ctx.close().catch(() => { /* ignore */ })
+}
+
+/** Громкость 0..2 (0-200%) для audio-элемента с треком `sid`. */
+function setElementVolume(sid: string, el: HTMLMediaElement, volume: number): void {
+  if (volume <= 1) {
+    teardownVolumeBoost(sid, el)
+    el.volume = Math.max(0, volume)
+    return
+  }
+  let boost = volumeBoosts.get(sid)
+  if (!boost) {
+    const rawStream = el.srcObject as MediaStream
+    const ctx = new AudioContext()
+    const source = ctx.createMediaStreamSource(rawStream)
+    const gain = ctx.createGain()
+    const dest = ctx.createMediaStreamDestination()
+    source.connect(gain)
+    gain.connect(dest)
+    boost = { ctx, source, gain, dest, rawStream }
+    volumeBoosts.set(sid, boost)
+    el.srcObject = dest.stream
+    el.volume = 1
+    void el.play().catch(() => { /* ignore */ })
+  }
+  boost.gain.gain.setTargetAtTime(volume, boost.ctx.currentTime, 0.1)
+}
+
 // ───── Нативный screen-audio (T-094 Stage C) ─────
 //
 // Кастомный аудио-трек, опубликованный как ScreenShareAudio из нативного WASAPI-
@@ -291,6 +343,7 @@ function detachAudio(track: RemoteTrack): void {
   if (!sid) return
   const el = attachedAudioElements.get(sid)
   if (el) {
+    teardownVolumeBoost(sid, el)
     try { track.detach(el) } catch { /* SDK already detached */ }
     el.remove()
     attachedAudioElements.delete(sid)
@@ -300,6 +353,7 @@ function detachAudio(track: RemoteTrack): void {
 }
 
 function clearAllAttachedAudio(): void {
+  for (const [sid, el] of attachedAudioElements) teardownVolumeBoost(sid, el)
   for (const el of attachedAudioElements.values()) el.remove()
   attachedAudioElements.clear()
 }
@@ -541,15 +595,26 @@ export async function restartMicConstraints(opts: AudioCaptureOptions): Promise<
   }
 }
 
+/** Громкость (0..2, до 200%) для одного источника участника — через
+ *  attachedAudioElements/setElementVolume, а не LiveKit-овский
+ *  `Participant.setVolume` (тот ограничен [0,1], см. setElementVolume). */
+function setSourceVolume(p: RemoteParticipant, source: Track.Source, volume: number): void {
+  const sid = p.getTrackPublication(source)?.track?.sid
+  if (!sid) return
+  const el = attachedAudioElements.get(sid)
+  if (!el) return
+  setElementVolume(sid, el, volume)
+}
+
 /** Итоговая громкость участника: deafen глушит всех, локальный мьют —
- *  точечно, дальше — персональные регуляторы голоса и стрима, умноженные
- *  на общую громкость динамика. */
+ *  точечно, дальше — персональные регуляторы голоса и стрима (до 200%),
+ *  умноженные на общую громкость динамика. */
 function applyVolumeFor(p: RemoteParticipant, deafened: boolean): void {
   const silenced = deafened || useLocalMute.getState().isMuted(p.identity)
   const master = useAudioDevices.getState().speakerVolume
   const vols = volumesFor(useVoiceVolumes.getState().volumes, p.identity)
-  p.setVolume(silenced ? 0 : Math.min(1, vols.user * master), Track.Source.Microphone)
-  p.setVolume(silenced ? 0 : Math.min(1, vols.stream * master), Track.Source.ScreenShareAudio)
+  setSourceVolume(p, Track.Source.Microphone, silenced ? 0 : Math.min(2, vols.user * master))
+  setSourceVolume(p, Track.Source.ScreenShareAudio, silenced ? 0 : Math.min(2, vols.stream * master))
 }
 
 /** Переприменяет громкость одного участника в активной комнате — дёргается

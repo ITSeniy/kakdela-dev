@@ -89,7 +89,7 @@ export function VoiceUserMenu({ x, y, target, canManage, onClose }: VoiceUserMen
         <input
           type="range"
           min={0}
-          max={100}
+          max={200}
           value={Math.round(vols.user * 100)}
           onChange={(e) => {
             setVoiceVolume(target.userId, 'user', Number(e.target.value) / 100)
@@ -107,7 +107,7 @@ export function VoiceUserMenu({ x, y, target, canManage, onClose }: VoiceUserMen
           <input
             type="range"
             min={0}
-            max={100}
+            max={200}
             value={Math.round(vols.stream * 100)}
             onChange={(e) => {
               setVoiceVolume(target.userId, 'stream', Number(e.target.value) / 100)
@@ -123,7 +123,7 @@ export function VoiceUserMenu({ x, y, target, canManage, onClose }: VoiceUserMen
           toggleLocalParticipantMute(target.userId)
           onClose()
         }}
-        className="w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 text-kd-text hover:bg-kd-panel-hi transition-colors"
+        className="w-full text-left px-3 py-1 text-[12px] leading-tight flex items-center gap-2 text-kd-text hover:bg-kd-panel-hi transition-colors"
       >
         {locallyMuted ? (
           <><Icon.Speaker size={12} className="text-kd-text-mute" /> слышать снова</>
@@ -140,7 +140,7 @@ export function VoiceUserMenu({ x, y, target, canManage, onClose }: VoiceUserMen
               moderate.mutate({ action: target.serverMuted ? 'unmute' : 'mute' })
               onClose()
             }}
-            className="w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 text-kd-text hover:bg-kd-panel-hi transition-colors"
+            className="w-full text-left px-3 py-1 text-[12px] leading-tight flex items-center gap-2 text-kd-text hover:bg-kd-panel-hi transition-colors"
           >
             <Icon.MicOff size={12} className="text-kd-warm" />
             {target.serverMuted ? 'вернуть микрофон' : 'заглушить микрофон'}
@@ -151,7 +151,7 @@ export function VoiceUserMenu({ x, y, target, canManage, onClose }: VoiceUserMen
               moderate.mutate({ action: target.serverDeafened ? 'undeafen' : 'deafen' })
               onClose()
             }}
-            className="w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 text-kd-text hover:bg-kd-panel-hi transition-colors"
+            className="w-full text-left px-3 py-1 text-[12px] leading-tight flex items-center gap-2 text-kd-text hover:bg-kd-panel-hi transition-colors"
           >
             <Icon.HeadphonesOff size={12} className="text-kd-warm" />
             {target.serverDeafened ? 'вернуть звук' : 'выключить звук'}
@@ -163,7 +163,7 @@ export function VoiceUserMenu({ x, y, target, canManage, onClose }: VoiceUserMen
               moderate.mutate({ action: 'kick' })
               onClose()
             }}
-            className="w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 text-kd-danger hover:bg-kd-danger/10 transition-colors"
+            className="w-full text-left px-3 py-1 text-[12px] leading-tight flex items-center gap-2 text-kd-danger hover:bg-kd-danger/10 transition-colors"
           >
             <Icon.PhoneOff size={12} />
             отключить от канала

@@ -1,8 +1,9 @@
 // Персональная громкость участников: отдельно голос (микрофон) и звук
-// стрима (screen share audio). 0..1 — это volume аудио-элемента, выше
-// единицы браузер не умеет. Персистится: выставил тихоню погромче один
-// раз — настройка переживает перезаходы. Применение к живой комнате
-// делает lib/livekit.ts (applyParticipantVolume).
+// стрима (screen share audio). 0..2 (0-200%) — выше 1.0 lib/livekit.ts
+// прогоняет звук через GainNode (HTMLMediaElement.volume сам умеет только
+// 0..1). Персистится: выставил тихоню погромче один раз — настройка
+// переживает перезаходы. Применение к живой комнате делает lib/livekit.ts
+// (applyParticipantVolume).
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
@@ -25,7 +26,7 @@ export const useVoiceVolumes = create<VolumeStore>()(
         set((s) => ({
           volumes: {
             ...s.volumes,
-            [userId]: { ...s.volumes[userId], [kind]: Math.min(1, Math.max(0, value)) },
+            [userId]: { ...s.volumes[userId], [kind]: Math.min(2, Math.max(0, value)) },
           },
         })),
     }),
