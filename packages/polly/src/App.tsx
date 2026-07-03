@@ -85,13 +85,34 @@ export function App() {
     })
   }, [queryClient, navigate])
 
+  // msg.*-события патчат кэш только у ОТКРЫТОГО канала (useMessages следит
+  // лишь за своим channelId). Ленты остальных каналов молча гниют: переход
+  // по уведомлению в течение staleTime показывал канал БЕЗ нового сообщения.
+  // Помечаем ленту невалидной без рефетча — при следующем маунте канал
+  // перезапросится независимо от staleTime, а открытый канал живёт патчами.
+  useEffect(() => {
+    return wsClient.on((event) => {
+      if (
+        event.t !== 'msg.new' && event.t !== 'msg.edit' && event.t !== 'msg.delete'
+        && event.t !== 'msg.pin' && event.t !== 'msg.embeds'
+        && event.t !== 'reaction.add' && event.t !== 'reaction.remove'
+      ) return
+      void queryClient.invalidateQueries({
+        queryKey: ['messages', event.channelId],
+        refetchType: 'none',
+      })
+    })
+  }, [queryClient])
+
   // Сервер при каждом коннекте принудительно ставит presence=online. Если
   // пользователь выбрал «отошёл»/«не беспокоить» — восстанавливаем после
   // ready (срабатывает и на первом коннекте, и на реконнектах).
   //
-  // Backfill: пока сокет лежал, мы могли пропустить msg.new и прочие
-  // инвалидации — события не буферизуются. На РЕконнекте (не на первом ready)
-  // перезапрашиваем открытые ленты и счётчики, чтобы «досылать» пропущенное.
+  // Backfill: пока сокет лежал, мы могли пропустить любые события — они не
+  // буферизуются, а весь кэш живёт на WS-патчах/инвалидациях. На РЕконнекте
+  // (не на первом ready) инвалидируем ВСЁ: participants голоса, members,
+  // роли, каналы, ленты — точечный список здесь всегда будет неполным, а
+  // для 15–20 человек полный ресинк дёшев.
   const hadReadyRef = useRef(false)
   useEffect(() => {
     return wsClient.on((event) => {
@@ -100,11 +121,7 @@ export function App() {
       if (myStatus !== 'online') wsClient.send({ t: 'presence', status: myStatus })
 
       if (hadReadyRef.current) {
-        void queryClient.invalidateQueries({ queryKey: ['messages'] })
-        void queryClient.invalidateQueries({ queryKey: ['dm-list'] })
-        void queryClient.invalidateQueries({ queryKey: ['inbox-unread'] })
-        void queryClient.invalidateQueries({ queryKey: ['inbox-mentions'] })
-        void queryClient.invalidateQueries({ queryKey: ['inbox-unread-by-server'] })
+        void queryClient.invalidateQueries()
       }
       hadReadyRef.current = true
     })

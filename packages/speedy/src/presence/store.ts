@@ -105,6 +105,27 @@ class PresenceStore {
     return parseState(raw)
   }
 
+  /**
+   * Реконсиляция на старте процесса. После рестарта/краша speedy счётчики
+   * соединений в Redis осиротели (close-хендлеры не отработали), а offline-
+   * дебаунс-таймеры жили в памяти — без сброса все, кто был подключён,
+   * выглядят «online» навечно. customStatus и lastSeen сохраняем; живые
+   * клиенты переподключатся и снова станут online через addConnection.
+   */
+  async resetAll(): Promise<void> {
+    let cursor = '0'
+    do {
+      const [next, keys] = await this.client.scan(cursor, 'MATCH', KEY('*'), 'COUNT', 100)
+      cursor = next
+      if (keys.length === 0) continue
+      const pipeline = this.client.pipeline()
+      for (const key of keys) {
+        pipeline.hset(key, { status: 'offline', connectionCount: '0' })
+      }
+      await pipeline.exec()
+    } while (cursor !== '0')
+  }
+
   async getStatusBulk(userIds: readonly string[]): Promise<Map<string, PresenceState>> {
     const out = new Map<string, PresenceState>()
     if (userIds.length === 0) return out

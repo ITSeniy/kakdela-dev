@@ -13,6 +13,7 @@ import { confirmDialog } from '../../components/ConfirmDialog.js'
 import { Toggle } from '../../components/form/Toggle.js'
 import { toast } from '../../components/toast/index.js'
 import { ApiError } from '../../lib/api.js'
+import { wsClient } from '../../lib/ws.js'
 import { createRole, deleteRole, listRoles, patchRole, setMemberRoles } from '../roles/api.js'
 import { listMembers } from '../servers/api.js'
 
@@ -59,6 +60,17 @@ export function RolesSettings({ serverId }: { serverId: string }) {
     void queryClient.invalidateQueries({ queryKey: ['roles', serverId] })
     void queryClient.invalidateQueries({ queryKey: ['members', serverId] })
   }
+
+  // Чужие правки ролей (другой админ, другое окно) — обновляем список,
+  // пока настройки открыты; иначе редактор живёт на устаревшем срезе.
+  useEffect(() => {
+    return wsClient.on((event) => {
+      if ((event.t === 'role.update' || event.t === 'member.roles') && event.serverId === serverId) {
+        void queryClient.invalidateQueries({ queryKey: ['roles', serverId] })
+        void queryClient.invalidateQueries({ queryKey: ['members', serverId] })
+      }
+    })
+  }, [serverId, queryClient])
 
   const createMut = useMutation({
     mutationFn: () => createRole(serverId, { name: 'новая роль', color: DEFAULT_COLORS[0] }),

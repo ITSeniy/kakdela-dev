@@ -9,6 +9,7 @@ import { startAutoDeleteSweeper } from './lib/auto-delete.js'
 import { startSecretEnvelopeSweeper } from './lib/secret-sweeper.js'
 import { makeLoggerOptions } from './lib/logger.js'
 import { redis } from './lib/redis.js'
+import { presence } from './presence/store.js'
 import { healthRoutes } from './routes/health.js'
 import { auditRoutes } from './routes/audit.js'
 import { authRoutes } from './routes/auth.js'
@@ -103,6 +104,11 @@ async function main() {
   }
   process.on('SIGTERM', () => { void shutdown() })
   process.on('SIGINT', () => { void shutdown() })
+
+  // Осиротевшие после рестарта/краша счётчики presence → все offline;
+  // живые клиенты переподключатся и снова станут online. До listen, чтобы
+  // первый же addConnection не потёрся сбросом.
+  await presence.resetAll()
 
   await app.listen({ host: env.SPEEDY_HOST, port: env.SPEEDY_PORT })
 
