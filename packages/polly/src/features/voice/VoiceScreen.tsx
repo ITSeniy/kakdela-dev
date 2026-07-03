@@ -24,10 +24,6 @@ import { VoiceCallChat } from './VoiceCallChat.js'
 import { VoiceControls } from './VoiceControls.js'
 import { VoiceUserMenu, type VoiceUserMenuTarget } from './VoiceUserMenu.js'
 import { useCallChatUi } from './callChatUi.js'
-import {
-  useScreenShareSettings,
-  type ScreenQuality,
-} from './screenShareSettings.js'
 import { snapshotTrack } from './snapshot.js'
 import { useCamera } from './useCamera.js'
 import { useScreenShare } from './useScreenShare.js'
@@ -289,9 +285,8 @@ function Card({
 export function VoiceScreen({ serverId, channel }: VoiceScreenProps) {
   const me = useAuthStore((s) => s.user)
   const { join, leave, toggleMute, toggleDeafen } = useVoiceRoom()
-  const { startShare, stopShare, restartShare } = useScreenShare()
+  const { startShare, stopShare } = useScreenShare()
   const { startCamera, stopCamera } = useCamera()
-  const setScreenQuality = useScreenShareSettings((s) => s.setScreenQuality)
 
   const activeChannelId = useVoiceStore((s) => s.activeChannelId)
   const status = useVoiceStore((s) => s.status)
@@ -476,13 +471,6 @@ export function VoiceScreen({ serverId, channel }: VoiceScreenProps) {
     else void startCamera()
   }
 
-  const onChangeScreenQuality = (q: ScreenQuality): void => {
-    setScreenQuality(q)
-    // Применяем preset на лету — без stop/start LiveKit продолжит публиковать
-    // с прежним битрейтом. Если не шарим, restartShare сам себя отменит.
-    void restartShare()
-  }
-
   const onSnapshot = async (card: CardData): Promise<void> => {
     if (!card.screenTrack) return
     // Гонка: пока висит upload — игнорируем повторные клики по этой карточке.
@@ -633,7 +621,6 @@ export function VoiceScreen({ serverId, channel }: VoiceScreenProps) {
             onToggleDeafen={() => { void toggleDeafen() }}
             onToggleCamera={onToggleCamera}
             onToggleScreenShare={onToggleScreenShare}
-            onChangeScreenQuality={onChangeScreenQuality}
             onLeave={() => { void leave() }}
           />
         </>

@@ -23,6 +23,27 @@ export const SCREEN_QUALITY_ORDER: readonly ScreenQuality[] = [
   '720p15',
 ]
 
+/**
+ * Источник нативного звука демки (Windows/WASAPI, T-094):
+ *  • `auto` — звук приложения, чьё окно выбрано в системном пикере (заголовок
+ *    окна из `track.label` матчится на pid). Выбран весь экран / матчинг не
+ *    удался / нет process loopback → фолбэк на весь системный звук. Дефолт —
+ *    это дискордовское «шаришь игру — слышно игру», эха нет.
+ *  • `system` — весь системный звук (loopback устройства вывода). Ловит всё,
+ *    включая голоса собеседников из колонок → возможно эхо.
+ *  • `process` — звук одного конкретного приложения (process loopback),
+ *    независимо от того, какое окно транслируется. Требует Win10 19041+
+ *    (`cap.processLoopback`).
+ *
+ * `process` храним по ИМЕНИ exe, а не по pid: pid эфемерный (приложение
+ * перезапустят — сменится), поэтому при каждом старте демо заново находим
+ * живой pid по имени среди текущих аудио-сессий.
+ */
+export type AudioSource =
+  | { kind: 'auto' }
+  | { kind: 'system' }
+  | { kind: 'process'; name: string }
+
 interface ScreenShareSettingsState {
   /**
    * Включать ли захват системного звука вместе с экраном. Default true —
@@ -47,12 +68,19 @@ interface ScreenShareSettingsState {
    * и при «restart» в случае смены на лету.
    */
   screenQuality: ScreenQuality
+  /**
+   * Источник нативного звука демки (см. {@link AudioSource}). Дефолт — весь
+   * системный звук; пользователь может сузить до конкретного приложения, чтобы
+   * убрать эхо. Доступно только когда платформа умеет process loopback.
+   */
+  audioSource: AudioSource
 }
 
 interface ScreenShareSettingsActions {
   setWithAudio(v: boolean): void
   setAudioCaptureSupported(v: boolean): void
   setScreenQuality(q: ScreenQuality): void
+  setAudioSource(s: AudioSource): void
 }
 
 export const useScreenShareSettings = create<
@@ -63,6 +91,7 @@ export const useScreenShareSettings = create<
       withAudio: true,
       audioCaptureSupported: null,
       screenQuality: '720p30',
+      audioSource: { kind: 'auto' },
       setWithAudio(v) {
         set({ withAudio: v })
       },
@@ -72,7 +101,23 @@ export const useScreenShareSettings = create<
       setScreenQuality(q) {
         set({ screenQuality: q })
       },
+      setAudioSource(s) {
+        set({ audioSource: s })
+      },
     }),
-    { name: 'kd:voice:screen-share' },
+    {
+      name: 'kd:voice:screen-share',
+      version: 1,
+      migrate(persisted, version) {
+        // v0 → v1: появился audioSource 'auto' (звук выбранного окна) и стал
+        // дефолтом. Старый 'system' был дефолтом, а не осознанным выбором —
+        // переводим на 'auto'; явный выбор 'process' сохраняем.
+        const state = persisted as Partial<ScreenShareSettingsState>
+        if (version < 1 && state.audioSource?.kind === 'system') {
+          state.audioSource = { kind: 'auto' }
+        }
+        return state
+      },
+    },
   ),
 )

@@ -63,6 +63,7 @@ windows = { version = "0.61", features = [
     "Win32_System_Threading",              # CreateEventW / WaitForSingleObject / SetEvent
     "Win32_System_Diagnostics_ToolHelp",   # список процессов для пикера
     "Win32_Media_Audio",
+    "Win32_UI_WindowsAndMessaging",        # EnumWindows (автопривязка звука к окну демо)
 ] }
 # `#[implement]` (COM completion handler для ActivateAudioInterfaceAsync) генерит
 # пути `windows_core::...`, поэтому крейт должен быть доступен под этим именем.

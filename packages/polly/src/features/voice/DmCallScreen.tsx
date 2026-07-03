@@ -23,7 +23,6 @@ import { useAuthStore } from '../auth/store.js'
 import { ParticipantTile } from './ParticipantTile.js'
 import { ScreenTile } from './ScreenTile.js'
 import { VoiceControls } from './VoiceControls.js'
-import { useScreenShareSettings, type ScreenQuality } from './screenShareSettings.js'
 import { useScreenShare } from './useScreenShare.js'
 import { useVoiceRoom, type DmCallPeer } from './useVoiceRoom.js'
 import { useVoiceStore, type ParticipantState } from './store.js'
@@ -56,8 +55,7 @@ function formatElapsed(total: number): string {
 export function DmCallScreen({ channelId, peer, onMinimize }: DmCallScreenProps) {
   const me = useAuthStore((s) => s.user)
   const { leave, toggleMute, toggleDeafen } = useVoiceRoom()
-  const { startShare, stopShare, restartShare } = useScreenShare()
-  const setScreenQuality = useScreenShareSettings((s) => s.setScreenQuality)
+  const { startShare, stopShare } = useScreenShare()
 
   const status = useVoiceStore((s) => s.status)
   const muted = useVoiceStore((s) => s.muted)
@@ -184,10 +182,6 @@ export function DmCallScreen({ channelId, peer, onMinimize }: DmCallScreenProps)
     if (screenSharing) void stopShare()
     else void startShare()
   }
-  const onChangeScreenQuality = (q: ScreenQuality): void => {
-    setScreenQuality(q)
-    void restartShare()
-  }
 
   return (
     <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-kd-bg">
@@ -270,7 +264,6 @@ export function DmCallScreen({ channelId, peer, onMinimize }: DmCallScreenProps)
             onToggleDeafen={() => { void toggleDeafen() }}
             onToggleCamera={() => {}}
             onToggleScreenShare={onToggleScreenShare}
-            onChangeScreenQuality={onChangeScreenQuality}
             onLeave={() => { void leave() }}
           />
         </>

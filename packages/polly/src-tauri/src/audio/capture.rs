@@ -1,25 +1,21 @@
-// T-094 Stage A + B — WASAPI loopback-захват системного звука → 16-бит PCM WAV.
+// T-094 — WASAPI loopback-захват звука для демонстрации экрана (Windows-only).
 //
-//   • Stage A (record_loopback): ВЕСЬ системный звук с default render endpoint
-//     (синхронная активация IMMDevice::Activate, polling-цикл).
-//   • Stage B (record_process_loopback): звук ОДНОГО процесса (и его дерева),
-//     по-дискордовски, через ActivateAudioInterfaceAsync + process-loopback
-//     PROPVARIANT (event-driven цикл).
+//   • Захват ОДНОГО процесса (и его дерева), по-дискордовски, через
+//     ActivateAudioInterfaceAsync + process-loopback PROPVARIANT.
+//   • Захват ВСЕГО системного звука с default render endpoint.
+//   • Непрерывный стрим PCM в JS (мост в LiveKit, см. stream_capture).
+//   • Перечисление звучащих приложений/окон для пикера источника звука.
 //
-// Общая часть (разбор формата, конверсия в i16, дренаж пакетов, запись WAV) —
-// переиспользуется. Это verification-артефакт (WAV); мост в LiveKit — Stage C.
 // Компилируется только на Windows (см. `#[cfg(windows)]` в mod.rs).
 
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
+use std::collections::HashMap;
 use std::mem::size_of;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use windows::core::{implement, Interface, GUID, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::core::{implement, Interface, BOOL, PCWSTR};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
     eConsole, eRender, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
     IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
@@ -27,8 +23,9 @@ use windows::Win32::Media::Audio::{
     AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
     AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
     AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-    AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-    VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+    AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, AudioSessionStateActive, IAudioSessionControl2,
+    IAudioSessionManager2, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+    VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
 };
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{
@@ -39,6 +36,9 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::System::Variant::VT_BLOB;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+};
 
 /// AUDCLNT_BUFFERFLAGS_SILENT — данные пакета считать тишиной. Берём литералом,
 /// чтобы не зависеть от типа константы в конкретной версии windows-crate.
@@ -51,33 +51,34 @@ const PROC_SAMPLE_RATE: u32 = 48_000;
 const PROC_CHANNELS: u16 = 2;
 const PROC_BITS: u16 = 16;
 
-/// Итог записи — путь к WAV + параметры потока (отдаётся в JS).
-pub struct CaptureSummary {
-    pub path: PathBuf,
-    pub sample_rate: u32,
-    pub channels: u16,
-    pub frames: u64,
-    pub bytes: u64,
+/// Аудио-сессия для пикера «звук приложения»: pid + имя exe + играет ли прямо
+/// сейчас (active). Это то, что реально способно звучать, в отличие от полного
+/// списка процессов.
+pub struct AudioSessionInfo {
+    pub pid: u32,
+    pub name: String,
+    pub active: bool,
 }
 
-/// Процесс для пикера (PID + имя exe).
-pub struct ProcessInfo {
+/// Видимое top-level окно: pid владельца + заголовок + имя exe. Кандидат для
+/// автопривязки звука демки к окну, выбранному в системном пикере (T-094).
+pub struct WindowInfo {
     pub pid: u32,
+    pub title: String,
     pub name: String,
 }
 
 #[derive(Clone, Copy)]
 enum SampleKind {
-    Float,
     Int,
 }
 
-/// Разобранный формат потока (что отдаёт GetMixFormat / что мы задали сами).
+/// Разобранный формат потока, который мы сами задаём для захвата (см.
+/// `stream_format`) — всегда фиксированный PCM int.
 struct SrcFormat {
     kind: SampleKind,
     bits: u16,
     channels: u16,
-    sample_rate: u32,
     block_align: u16,
 }
 
@@ -99,72 +100,7 @@ impl Drop for HandleGuard {
     }
 }
 
-// ───────────────────────── Stage A: весь системный звук ─────────────────────
-
-/// Записывает `seconds` секунд ВСЕГО системного звука в `path` (16-бит PCM WAV).
-pub fn record_loopback(seconds: u32, path: PathBuf) -> Result<CaptureSummary, String> {
-    unsafe { record_loopback_inner(seconds, path) }
-}
-
-unsafe fn record_loopback_inner(seconds: u32, path: PathBuf) -> Result<CaptureSummary, String> {
-    CoInitializeEx(None, COINIT_MULTITHREADED)
-        .ok()
-        .map_err(|e| format!("CoInitializeEx: {e}"))?;
-    let _com = ComGuard;
-
-    let enumerator: IMMDeviceEnumerator =
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
-    // Loopback читаем С ВЫХОДНОГО устройства (eRender) — это «весь звук, что
-    // играет на колонках/в наушниках».
-    let device = enumerator
-        .GetDefaultAudioEndpoint(eRender, eConsole)
-        .map_err(|e| e.to_string())?;
-    let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| e.to_string())?;
-
-    let pwfx = client.GetMixFormat().map_err(|e| e.to_string())?;
-    if pwfx.is_null() {
-        return Err("GetMixFormat returned null".into());
-    }
-    let fmt = classify_format(pwfx)?;
-
-    client
-        .Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK,
-            10_000_000, // буфер 1 с (в единицах 100 нс)
-            0,
-            pwfx,
-            None,
-        )
-        .map_err(|e| e.to_string())?;
-
-    let capture: IAudioCaptureClient = client.GetService().map_err(|e| e.to_string())?;
-
-    let mut wav = WavWriter::create(&path, fmt.channels, fmt.sample_rate)?;
-    let mut total_frames: u64 = 0;
-    let mut scratch: Vec<i16> = Vec::new();
-
-    client.Start().map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(seconds as u64);
-    while Instant::now() < deadline {
-        // Поллинг ~10 мс: буфер 1 с, переполнения не будет. Событийную модель
-        // здесь не берём — для системного loopback при тишине события не приходят.
-        std::thread::sleep(Duration::from_millis(10));
-        drain_packets(&capture, &fmt, &mut wav, &mut scratch, &mut total_frames)?;
-    }
-    client.Stop().map_err(|e| e.to_string())?;
-
-    let bytes = wav.finalize()? as u64;
-    Ok(CaptureSummary {
-        path,
-        sample_rate: fmt.sample_rate,
-        channels: fmt.channels,
-        frames: total_frames,
-        bytes,
-    })
-}
-
-// ──────────────────── Stage B: звук одного процесса (дерева) ────────────────
+// ──────────────────── Захват звука одного процесса (дерева) ────────────────
 
 /// Хэндлер завершения асинхронной активации: сигналит event, который ждёт
 /// вызывающий поток. Сам результат забираем через GetActivateResult на op.
@@ -183,91 +119,6 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationHandler_Impl {
         }
         Ok(())
     }
-}
-
-/// Записывает `seconds` секунд звука процесса `pid` (и его дочерних) в `path`.
-pub fn record_process_loopback(
-    pid: u32,
-    seconds: u32,
-    path: PathBuf,
-) -> Result<CaptureSummary, String> {
-    unsafe { record_process_loopback_inner(pid, seconds, path) }
-}
-
-unsafe fn record_process_loopback_inner(
-    pid: u32,
-    seconds: u32,
-    path: PathBuf,
-) -> Result<CaptureSummary, String> {
-    CoInitializeEx(None, COINIT_MULTITHREADED)
-        .ok()
-        .map_err(|e| format!("CoInitializeEx: {e}"))?;
-    let _com = ComGuard;
-
-    let client = activate_process_loopback_client(pid)?;
-
-    // Формат задаём сами — у виртуального process-loopback устройства нет
-    // endpoint-микса. AUTOCONVERTPCM просит движок привести источник к нему.
-    let mut format = WAVEFORMATEX {
-        wFormatTag: 1, // WAVE_FORMAT_PCM
-        nChannels: PROC_CHANNELS,
-        nSamplesPerSec: PROC_SAMPLE_RATE,
-        nAvgBytesPerSec: PROC_SAMPLE_RATE * PROC_CHANNELS as u32 * (PROC_BITS as u32 / 8),
-        nBlockAlign: PROC_CHANNELS * (PROC_BITS / 8),
-        wBitsPerSample: PROC_BITS,
-        cbSize: 0,
-    };
-    let fmt = SrcFormat {
-        kind: SampleKind::Int,
-        bits: PROC_BITS,
-        channels: PROC_CHANNELS,
-        sample_rate: PROC_SAMPLE_RATE,
-        block_align: format.nBlockAlign,
-    };
-
-    // Process loopback в shared-режиме работает event-driven (как в MS-сэмпле
-    // ApplicationLoopback). periodicity = 0 (для shared обязательно 0).
-    client
-        .Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK
-                | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-            2_000_000, // буфер ~200 мс
-            0,
-            &mut format,
-            None,
-        )
-        .map_err(|e| format!("Initialize(process loopback): {e}"))?;
-
-    let sample_ready = CreateEventW(None, false, false, PCWSTR::null()).map_err(|e| e.to_string())?;
-    let _ev_guard = HandleGuard(sample_ready);
-    client.SetEventHandle(sample_ready).map_err(|e| e.to_string())?;
-
-    let capture: IAudioCaptureClient = client.GetService().map_err(|e| e.to_string())?;
-
-    let mut wav = WavWriter::create(&path, fmt.channels, fmt.sample_rate)?;
-    let mut total_frames: u64 = 0;
-    let mut scratch: Vec<i16> = Vec::new();
-
-    client.Start().map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(seconds as u64);
-    while Instant::now() < deadline {
-        // Ждём событие «готов сэмпл» с таймаутом, чтобы выйти по дедлайну даже
-        // когда процесс молчит (события не приходят при тишине).
-        WaitForSingleObject(sample_ready, 200);
-        drain_packets(&capture, &fmt, &mut wav, &mut scratch, &mut total_frames)?;
-    }
-    client.Stop().map_err(|e| e.to_string())?;
-
-    let bytes = wav.finalize()? as u64;
-    Ok(CaptureSummary {
-        path,
-        sample_rate: fmt.sample_rate,
-        channels: fmt.channels,
-        frames: total_frames,
-        bytes,
-    })
 }
 
 /// Асинхронно активирует IAudioClient для process-loopback указанного PID
@@ -328,13 +179,10 @@ unsafe fn activate_process_loopback_client(pid: u32) -> Result<IAudioClient, Str
     unknown.cast::<IAudioClient>().map_err(|e| e.to_string())
 }
 
-/// Список процессов (PID + имя exe) для пикера. Возвращает все процессы; фильтр
-/// «только звучащие» — возможное улучшение (B2, через IAudioSessionManager2).
-pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
-    unsafe { list_processes_inner() }
-}
-
-unsafe fn list_processes_inner() -> Result<Vec<ProcessInfo>, String> {
+/// pid → имя exe через toolhelp-снапшот. Общая основа для списка процессов и
+/// для перечисления аудио-сессий (оно отдаёт только pid — имя резолвим тут,
+/// без OpenProcess: меньше требуемых прав и поверхности).
+unsafe fn process_name_map() -> Result<HashMap<u32, String>, String> {
     let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(|e| e.to_string())?;
     let _guard = HandleGuard(snapshot);
 
@@ -343,7 +191,7 @@ unsafe fn list_processes_inner() -> Result<Vec<ProcessInfo>, String> {
         ..Default::default()
     };
 
-    let mut out = Vec::new();
+    let mut map = HashMap::new();
     if Process32FirstW(snapshot, &mut entry).is_ok() {
         loop {
             let len = entry
@@ -353,17 +201,143 @@ unsafe fn list_processes_inner() -> Result<Vec<ProcessInfo>, String> {
                 .unwrap_or(entry.szExeFile.len());
             let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
             if entry.th32ProcessID != 0 {
-                out.push(ProcessInfo {
-                    pid: entry.th32ProcessID,
-                    name,
-                });
+                map.insert(entry.th32ProcessID, name);
             }
             if Process32NextW(snapshot, &mut entry).is_err() {
                 break;
             }
         }
     }
+    Ok(map)
+}
+
+/// Перечисляет приложения с аудио-сессией на устройстве вывода по умолчанию —
+/// то, что реально способно звучать. Источник для пользовательского пикера
+/// «звук приложения»: IAudioSessionManager2 → IAudioSessionEnumerator →
+/// IAudioSessionControl2 (pid + состояние), имя резолвим из toolhelp-карты.
+pub fn list_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
+    unsafe { list_audio_sessions_inner() }
+}
+
+unsafe fn list_audio_sessions_inner() -> Result<Vec<AudioSessionInfo>, String> {
+    CoInitializeEx(None, COINIT_MULTITHREADED)
+        .ok()
+        .map_err(|e| format!("CoInitializeEx: {e}"))?;
+    let _com = ComGuard;
+
+    let names = process_name_map()?;
+
+    let enumerator: IMMDeviceEnumerator =
+        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
+    // Сессии берём с того же default-render endpoint, что и loopback-захват —
+    // список совпадает с тем, что реально попадёт в системный микс.
+    let device = enumerator
+        .GetDefaultAudioEndpoint(eRender, eConsole)
+        .map_err(|e| e.to_string())?;
+    let manager: IAudioSessionManager2 =
+        device.Activate(CLSCTX_ALL, None).map_err(|e| e.to_string())?;
+    let sessions = manager.GetSessionEnumerator().map_err(|e| e.to_string())?;
+    let count = sessions.GetCount().map_err(|e| e.to_string())?;
+
+    // Один процесс может держать несколько сессий — агрегируем «активен» по OR
+    // (хоть одна играет → приложение звучит).
+    let mut acc: HashMap<u32, bool> = HashMap::new();
+    for i in 0..count {
+        let ctrl = match sessions.GetSession(i) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let ctrl2: IAudioSessionControl2 = match ctrl.cast() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        // Системные звуки (уведомления, бипы) — не приложение, пропускаем.
+        // IsSystemSoundsSession отдаёт S_OK(0), когда это та самая сессия.
+        if ctrl2.IsSystemSoundsSession().0 == 0 {
+            continue;
+        }
+        let pid = match ctrl2.GetProcessId() {
+            Ok(p) if p != 0 => p,
+            _ => continue,
+        };
+        let active = matches!(ctrl.GetState(), Ok(s) if s == AudioSessionStateActive);
+        let slot = acc.entry(pid).or_insert(false);
+        *slot = *slot || active;
+    }
+
+    let mut out: Vec<AudioSessionInfo> = acc
+        .into_iter()
+        .map(|(pid, active)| AudioSessionInfo {
+            pid,
+            name: names
+                .get(&pid)
+                .cloned()
+                .unwrap_or_else(|| format!("PID {pid}")),
+            active,
+        })
+        .collect();
+    // Активные сверху, затем по имени без учёта регистра — стабильный порядок UI.
+    out.sort_by(|a, b| {
+        b.active
+            .cmp(&a.active)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     Ok(out)
+}
+
+/// Перечисляет видимые top-level окна с заголовком. Используется автопривязкой
+/// звука к окну демо: заголовок из `track.label` (Chromium) матчится на pid,
+/// и звук берётся process-loopback'ом именно этого приложения. Фильтр нарочно
+/// минимальный (видимо + заголовок непустой): лишние кандидаты матчингу не
+/// мешают, а undermatching из-за агрессивных фильтров — мешает.
+pub fn list_capture_windows() -> Result<Vec<WindowInfo>, String> {
+    unsafe { list_capture_windows_inner() }
+}
+
+struct RawWindow {
+    pid: u32,
+    title: String,
+}
+
+unsafe extern "system" fn on_enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let acc = &mut *(lparam.0 as *mut Vec<RawWindow>);
+    if !IsWindowVisible(hwnd).as_bool() {
+        return true.into();
+    }
+    let mut buf = [0u16; 512];
+    let len = GetWindowTextW(hwnd, &mut buf) as usize;
+    if len == 0 {
+        return true.into();
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 {
+        return true.into();
+    }
+    acc.push(RawWindow {
+        pid,
+        title: String::from_utf16_lossy(&buf[..len]),
+    });
+    true.into()
+}
+
+unsafe fn list_capture_windows_inner() -> Result<Vec<WindowInfo>, String> {
+    // user32 + toolhelp, без COM — можно звать с любого потока.
+    let mut wins: Vec<RawWindow> = Vec::new();
+    EnumWindows(Some(on_enum_window), LPARAM(&mut wins as *mut _ as isize))
+        .map_err(|e| e.to_string())?;
+    let names = process_name_map()?;
+    Ok(wins
+        .into_iter()
+        .map(|w| WindowInfo {
+            pid: w.pid,
+            name: names
+                .get(&w.pid)
+                .cloned()
+                .unwrap_or_else(|| format!("PID {}", w.pid)),
+            title: w.title,
+        })
+        .collect())
 }
 
 // ───────── Stage C, шаг 1: непрерывный стрим PCM (мост в LiveKit) ─────────
@@ -386,7 +360,6 @@ fn stream_format() -> (WAVEFORMATEX, SrcFormat) {
         kind: SampleKind::Int,
         bits: PROC_BITS,
         channels: PROC_CHANNELS,
-        sample_rate: PROC_SAMPLE_RATE,
         block_align,
     };
     (wfx, fmt)
@@ -475,7 +448,8 @@ unsafe fn stream_capture_inner(
     Ok(())
 }
 
-/// Как drain_packets, но вместо WAV отдаёт сэмплы в callback (стрим).
+/// Вычитывает все доступные сейчас пакеты capture-клиента, конвертит в 16-бит и
+/// отдаёт сэмплы в callback (стрим PCM → JS).
 unsafe fn drain_to_sink(
     capture: &IAudioCaptureClient,
     fmt: &SrcFormat,
@@ -519,167 +493,20 @@ unsafe fn drain_to_sink(
     Ok(())
 }
 
-// ─────────────────────────── общая часть (A и B) ───────────────────────────
-
-/// Вычитывает все доступные сейчас пакеты capture-клиента, конвертит в 16-бит и
-/// пишет в WAV. Общая для Stage A (polling) и Stage B (event-driven).
-unsafe fn drain_packets(
-    capture: &IAudioCaptureClient,
-    fmt: &SrcFormat,
-    wav: &mut WavWriter,
-    scratch: &mut Vec<i16>,
-    total_frames: &mut u64,
-) -> Result<(), String> {
-    let channels = fmt.channels as usize;
-    let block_align = fmt.block_align as usize;
-    let bytes_per_sample = (fmt.bits / 8) as usize;
-    loop {
-        let packet = capture.GetNextPacketSize().map_err(|e| e.to_string())?;
-        if packet == 0 {
-            break;
-        }
-        let mut p_data: *mut u8 = std::ptr::null_mut();
-        let mut num_frames: u32 = 0;
-        let mut flags: u32 = 0;
-        capture
-            .GetBuffer(&mut p_data, &mut num_frames, &mut flags, None, None)
-            .map_err(|e| e.to_string())?;
-
-        let frames = num_frames as usize;
-        scratch.clear();
-        scratch.reserve(frames * channels);
-        if (flags & BUFFERFLAGS_SILENT) != 0 || p_data.is_null() {
-            scratch.resize(frames * channels, 0);
-        } else {
-            let data = std::slice::from_raw_parts(p_data, frames * block_align);
-            for f in 0..frames {
-                let frame_off = f * block_align;
-                for c in 0..channels {
-                    let off = frame_off + c * bytes_per_sample;
-                    scratch.push(sample_to_i16(&data[off..off + bytes_per_sample], fmt.kind, fmt.bits));
-                }
-            }
-        }
-        wav.write_i16(scratch)?;
-        *total_frames += num_frames as u64;
-        capture.ReleaseBuffer(num_frames).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-/// Разбирает WAVEFORMATEX(EXTENSIBLE): float vs int + битность.
-unsafe fn classify_format(pwfx: *const WAVEFORMATEX) -> Result<SrcFormat, String> {
-    let wfx = &*pwfx;
-    // 1 = WAVE_FORMAT_PCM, 3 = WAVE_FORMAT_IEEE_FLOAT, 0xFFFE = EXTENSIBLE.
-    let kind = match wfx.wFormatTag {
-        1 => SampleKind::Int,
-        3 => SampleKind::Float,
-        0xFFFE => {
-            // WAVEFORMATEXTENSIBLE — #[repr(packed)], поэтому ссылку на поле
-            // SubFormat (GUID, выравнивание 4) брать нельзя (UB). Читаем через
-            // raw-указатель с read_unaligned в локальную копию.
-            let ext = pwfx as *const WAVEFORMATEXTENSIBLE;
-            let subformat = std::ptr::addr_of!((*ext).SubFormat).read_unaligned();
-            // Фиксированные KSDATAFORMAT_SUBTYPE_* GUID'ы (захардкожены).
-            const SUBTYPE_PCM: GUID = GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71);
-            const SUBTYPE_FLOAT: GUID = GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
-            if subformat == SUBTYPE_FLOAT {
-                SampleKind::Float
-            } else if subformat == SUBTYPE_PCM {
-                SampleKind::Int
-            } else {
-                return Err(format!("unsupported extensible subformat {subformat:?}"));
-            }
-        }
-        other => return Err(format!("unsupported wFormatTag {other}")),
-    };
-    Ok(SrcFormat {
-        kind,
-        bits: wfx.wBitsPerSample,
-        channels: wfx.nChannels,
-        sample_rate: wfx.nSamplesPerSec,
-        block_align: wfx.nBlockAlign,
-    })
-}
-
-/// Нормализует один сэмпл к i16 (через f32 в [-1,1]). float32/64 и PCM int 16/24/32.
+/// Нормализует один сэмпл к i16 (через f32 в [-1,1]). PCM int 16/24/32 — формат
+/// задаём сами (см. `stream_format`), поэтому только целочисленные варианты.
 fn sample_to_i16(bytes: &[u8], kind: SampleKind, bits: u16) -> i16 {
-    let norm = match (kind, bits) {
-        (SampleKind::Float, 32) => f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        (SampleKind::Float, 64) => f64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]) as f32,
-        (SampleKind::Int, 16) => i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32_768.0,
-        (SampleKind::Int, 24) => {
+    let SampleKind::Int = kind;
+    let norm = match bits {
+        16 => i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32_768.0,
+        24 => {
             let raw = (bytes[0] as i32) | ((bytes[1] as i32) << 8) | ((bytes[2] as i32) << 16);
             let signed = (raw << 8) >> 8; // знаковое расширение 24→32
             signed as f32 / 8_388_608.0
         }
-        (SampleKind::Int, 32) => {
-            i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f32 / 2_147_483_648.0
-        }
+        32 => i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f32 / 2_147_483_648.0,
         _ => 0.0,
     };
     (norm.clamp(-1.0, 1.0) * 32_767.0).round() as i16
 }
 
-/// Минимальный потоковый WAV-писатель (16-бит PCM). Заголовок пишется с нулевыми
-/// размерами и патчится в finalize (файл seekable).
-struct WavWriter {
-    file: File,
-    data_bytes: u32,
-}
-
-impl WavWriter {
-    fn create(path: &PathBuf, channels: u16, sample_rate: u32) -> Result<Self, String> {
-        let mut file = File::create(path).map_err(|e| e.to_string())?;
-        write_wav_header(&mut file, channels, sample_rate, 0).map_err(|e| e.to_string())?;
-        Ok(Self { file, data_bytes: 0 })
-    }
-
-    fn write_i16(&mut self, samples: &[i16]) -> Result<(), String> {
-        let mut buf = Vec::with_capacity(samples.len() * 2);
-        for s in samples {
-            buf.extend_from_slice(&s.to_le_bytes());
-        }
-        self.file.write_all(&buf).map_err(|e| e.to_string())?;
-        self.data_bytes = self.data_bytes.saturating_add(buf.len() as u32);
-        Ok(())
-    }
-
-    fn finalize(mut self) -> Result<u32, String> {
-        self.file.seek(SeekFrom::Start(4)).map_err(|e| e.to_string())?;
-        self.file
-            .write_all(&(36 + self.data_bytes).to_le_bytes())
-            .map_err(|e| e.to_string())?;
-        self.file.seek(SeekFrom::Start(40)).map_err(|e| e.to_string())?;
-        self.file
-            .write_all(&self.data_bytes.to_le_bytes())
-            .map_err(|e| e.to_string())?;
-        Ok(self.data_bytes)
-    }
-}
-
-fn write_wav_header(
-    file: &mut File,
-    channels: u16,
-    sample_rate: u32,
-    data_bytes: u32,
-) -> std::io::Result<()> {
-    let byte_rate = sample_rate * channels as u32 * 2;
-    let block_align = channels * 2;
-    file.write_all(b"RIFF")?;
-    file.write_all(&(36 + data_bytes).to_le_bytes())?;
-    file.write_all(b"WAVE")?;
-    file.write_all(b"fmt ")?;
-    file.write_all(&16u32.to_le_bytes())?;
-    file.write_all(&1u16.to_le_bytes())?; // PCM
-    file.write_all(&channels.to_le_bytes())?;
-    file.write_all(&sample_rate.to_le_bytes())?;
-    file.write_all(&byte_rate.to_le_bytes())?;
-    file.write_all(&block_align.to_le_bytes())?;
-    file.write_all(&16u16.to_le_bytes())?; // bits per sample
-    file.write_all(b"data")?;
-    file.write_all(&data_bytes.to_le_bytes())?;
-    Ok(())
-}

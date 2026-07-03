@@ -94,9 +94,8 @@ pub fn run() {
             commands::secret_history_list,
             commands::secret_history_peers,
             audio::audio_capture_capability,
-            audio::audio_capture_record,
-            audio::audio_list_processes,
-            audio::audio_capture_record_process,
+            audio::audio_list_sessions,
+            audio::audio_list_windows,
             audio::audio_stream_start,
             audio::audio_stream_stop,
         ])

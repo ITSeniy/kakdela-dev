@@ -1,13 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import { Icon } from '../../components/Icon.js'
 import { describeKey, useVoiceInputSettings } from './inputSettings.js'
-import {
-  SCREEN_QUALITY_LABELS,
-  SCREEN_QUALITY_ORDER,
-  useScreenShareSettings,
-  type ScreenQuality,
-} from './screenShareSettings.js'
+import { ScreenSharePicker } from './ScreenSharePicker.js'
 import { useVoiceStore } from './store.js'
 
 interface VoiceControlsProps {
@@ -15,20 +10,9 @@ interface VoiceControlsProps {
   onToggleDeafen(): void
   onToggleCamera(): void
   onToggleScreenShare(): void
-  onChangeScreenQuality(q: ScreenQuality): void
   onLeave(): void
   /** Скрыть кнопку камеры (DM-звонок T-087: аудио + экран, без видео). */
   hideCamera?: boolean
-}
-
-function NoteIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 18V5l12-2v13" />
-      <circle cx="6" cy="18" r="3" />
-      <circle cx="18" cy="16" r="3" />
-    </svg>
-  )
 }
 
 // Кнопка-капсула из designs/final-voice.jsx (KD_VCtrl). Панель лежит на
@@ -78,110 +62,36 @@ function CtrlButton({
   )
 }
 
-/** Сплит-кнопка «демо»: основная — старт/стоп трансляции, ▾ — меню с
-    настройками (системный звук + качество). */
-function ScreenShareButton({
-  onToggleScreenShare,
-  onChangeScreenQuality,
-}: {
-  onToggleScreenShare(): void
-  onChangeScreenQuality(q: ScreenQuality): void
-}) {
+/** Кнопка «демо»: не шарим → Discord-style пикер (звук + качество, затем
+    системный выбор окна/экрана); шарим → немедленный стоп. */
+function ScreenShareButton({ onToggleScreenShare }: { onToggleScreenShare(): void }) {
   const screenSharing = useVoiceStore((s) => s.screenSharing)
-  const withAudio = useScreenShareSettings((s) => s.withAudio)
-  const audioCaptureSupported = useScreenShareSettings((s) => s.audioCaptureSupported)
-  const setWithAudio = useScreenShareSettings((s) => s.setWithAudio)
-  const screenQuality = useScreenShareSettings((s) => s.screenQuality)
-
-  const [menuOpen, setMenuOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!menuOpen) return
-    function onDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setMenuOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [menuOpen])
-
-  const audioDisabled = screenSharing || audioCaptureSupported === false
+  const [pickerOpen, setPickerOpen] = useState(false)
 
   return (
-    <div className="relative" ref={ref}>
-      <div className="inline-flex">
-        <button
-          type="button"
-          onClick={onToggleScreenShare}
-          title={screenSharing ? 'остановить демонстрацию экрана' : 'начать демонстрацию экрана'}
-          className={[
-            'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-l-[var(--kd-radius)] text-[11px] font-semibold transition-colors',
-            ctrlCls(screenSharing ? 'warn' : 'default'),
-          ].join(' ')}
-        >
-          <Icon.Monitor size={13} />
-          демо
-        </button>
-        <button
-          type="button"
-          onClick={() => setMenuOpen((o) => !o)}
-          title="настройки демо"
-          className={[
-            'inline-flex items-center px-1.5 py-1.5 rounded-r-[var(--kd-radius)] text-[10px] transition-colors border-l-0',
-            ctrlCls(screenSharing ? 'warn' : 'default', menuOpen),
-          ].join(' ')}
-        >
-          ▾
-        </button>
-      </div>
+    <>
+      <CtrlButton
+        label="демо"
+        tone={screenSharing ? 'warn' : 'default'}
+        title={screenSharing ? 'остановить демонстрацию экрана' : 'начать демонстрацию экрана'}
+        onClick={() => {
+          if (screenSharing) onToggleScreenShare()
+          else setPickerOpen(true)
+        }}
+      >
+        <Icon.Monitor size={13} />
+      </CtrlButton>
 
-      {menuOpen && (
-        <div className="absolute bottom-full left-0 mb-1.5 z-50 min-w-[190px] bg-kd-panel border border-kd-border rounded-kd shadow-kd-modal py-1 select-none">
-          <div className="px-3 pt-1 pb-1.5 text-[9px] font-mono font-bold uppercase tracking-wider text-kd-text-mute">
-            настройки демо
-          </div>
-          <button
-            type="button"
-            onClick={() => { if (!audioDisabled) setWithAudio(!withAudio) }}
-            disabled={audioDisabled}
-            title={
-              audioCaptureSupported === false
-                ? 'на вашей системе недоступно — браузер не отдаёт системный звук'
-                : screenSharing
-                  ? 'переключите до начала демо'
-                  : undefined
-            }
-            className={[
-              'w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 transition-colors',
-              audioDisabled ? 'text-kd-text-mute opacity-60 cursor-not-allowed' : 'text-kd-text hover:bg-kd-panel-alt',
-            ].join(' ')}
-          >
-            <NoteIcon />
-            <span className="flex-1">со звуком</span>
-            {withAudio && <span className="text-[10px] font-mono text-kd-accent">✓</span>}
-          </button>
-          <div className="my-1 h-px bg-kd-border mx-2" />
-          <div className="px-3 pt-0.5 pb-1 text-[9px] font-mono font-bold uppercase tracking-wider text-kd-text-mute">
-            качество
-          </div>
-          {SCREEN_QUALITY_ORDER.map((q) => (
-            <button
-              key={q}
-              type="button"
-              onClick={() => { onChangeScreenQuality(q); setMenuOpen(false) }}
-              title={screenSharing ? 'смена качества перезапустит трансляцию — picker появится снова' : undefined}
-              className={[
-                'w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 transition-colors hover:bg-kd-panel-alt',
-                q === screenQuality ? 'text-kd-text font-semibold' : 'text-kd-text-soft',
-              ].join(' ')}
-            >
-              <span className="flex-1 font-mono">{SCREEN_QUALITY_LABELS[q]}</span>
-              {q === screenQuality && <span className="text-[10px] font-mono text-kd-accent">✓</span>}
-            </button>
-          ))}
-        </div>
+      {pickerOpen && (
+        <ScreenSharePicker
+          onClose={() => setPickerOpen(false)}
+          onGoLive={() => {
+            setPickerOpen(false)
+            onToggleScreenShare()
+          }}
+        />
       )}
-    </div>
+    </>
   )
 }
 
@@ -190,7 +100,6 @@ export function VoiceControls({
   onToggleDeafen,
   onToggleCamera,
   onToggleScreenShare,
-  onChangeScreenQuality,
   onLeave,
   hideCamera = false,
 }: VoiceControlsProps) {
@@ -261,10 +170,7 @@ export function VoiceControls({
         </CtrlButton>
       )}
 
-      <ScreenShareButton
-        onToggleScreenShare={onToggleScreenShare}
-        onChangeScreenQuality={onChangeScreenQuality}
-      />
+      <ScreenShareButton onToggleScreenShare={onToggleScreenShare} />
 
       {screenSharing && (
         <span className="text-[10px] font-mono px-1.5 py-0.5 rounded text-kd-warm bg-kd-overlay-strong border border-kd-border">

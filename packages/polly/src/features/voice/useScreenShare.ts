@@ -9,7 +9,12 @@ import {
   type VideoPreset,
 } from 'livekit-client'
 
-import { getAudioCaptureCapability } from '../../lib/host/audioCapture.js'
+import {
+  getAudioCaptureCapability,
+  listAudioSessions,
+  listCaptureWindows,
+  type AudioCaptureCapability,
+} from '../../lib/host/audioCapture.js'
 import {
   getActiveRoom,
   registerNativeScreenAudio,
@@ -18,6 +23,7 @@ import {
 import { createNativeAudioTrack } from './nativeAudioTrack.js'
 import {
   useScreenShareSettings,
+  type AudioSource,
   type ScreenQuality,
 } from './screenShareSettings.js'
 import { useVoiceStore } from './store.js'
@@ -36,13 +42,6 @@ export interface UseScreenShare {
    */
   startShare(opts?: { withAudio?: boolean }): Promise<void>
   stopShare(): Promise<void>
-  /**
-   * Перезапустить активную трансляцию с актуальным preset'ом качества.
-   * Реализовано как stop → start, поэтому picker появится снова — это
-   * ожидаемая цена смены параметров на лету (LiveKit не умеет менять
-   * resolution без рекапчи source'а).
-   */
-  restartShare(): Promise<void>
 }
 
 interface ResolvedQuality {
@@ -114,14 +113,100 @@ function configForQuality(q: ScreenQuality): ResolvedQuality {
 }
 
 /**
- * Публикует нативно захваченный системный звук (WASAPI) как ScreenShareAudio-трек
- * той же демки (T-094 Stage C). Хэндл регистрируется в lib/livekit, чтобы трек
- * корректно снимался при stopShare / остановке из ОС-бара / выходе из комнаты.
- * Не критично: при ошибке демка остаётся, просто без звука.
+ * По выбранному источнику ({@link AudioSource}) находит живой pid среди текущих
+ * аудио-сессий. Возвращает `undefined` → захват всего системного звука:
+ *  • источник = «вся система»;
+ *  • платформа не умеет process loopback;
+ *  • выбранное приложение сейчас закрыто / не звучит (его нет в сессиях).
+ * Хранение по имени exe + резолв здесь делает выбор устойчивым к перезапуску
+ * приложения (pid меняется, имя — нет).
  */
-async function publishNativeScreenAudio(room: Room): Promise<void> {
+async function resolveNativeAudioPid(
+  source: AudioSource,
+  cap: AudioCaptureCapability,
+): Promise<number | undefined> {
+  if (source.kind !== 'process' || !cap.processLoopback) return undefined
   try {
-    const native = await createNativeAudioTrack({})
+    const want = source.name.toLowerCase()
+    const matches = (await listAudioSessions()).filter(
+      (s) => s.name.toLowerCase() === want,
+    )
+    if (matches.length === 0) return undefined
+    // Предпочитаем сессию, которая реально играет; иначе — любую совпавшую.
+    return (matches.find((s) => s.active) ?? matches[0])?.pid
+  } catch (err) {
+    console.warn('[voice] resolve native audio pid failed', err)
+    return undefined
+  }
+}
+
+/**
+ * Автопривязка (audioSource 'auto'): по опубликованному видео-треку демки понять,
+ * ЧЬЁ окно транслируется, и вернуть pid этого приложения для process loopback —
+ * дискордовское «шаришь игру — слышно игру». Возвращает `undefined` → весь
+ * системный звук:
+ *  • транслируется весь экран (displaySurface 'monitor') — системный звук и
+ *    есть корректное поведение;
+ *  • Chromium отдал opaque-ID вместо заголовка окна в `track.label`;
+ *  • заголовок не сматчился ни с одним видимым окном.
+ */
+async function resolveAutoAudioPid(room: Room): Promise<number | undefined> {
+  const pub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare)
+  const track = pub?.track?.mediaStreamTrack
+  if (!track) return undefined
+
+  const surface = (
+    track.getSettings() as MediaTrackSettings & { displaySurface?: string }
+  ).displaySurface
+  if (surface && surface !== 'window') return undefined
+
+  const label = track.label
+  // Форматы вида "window:12345:0" / "screen:0:0" — опаковые ID Chromium, не
+  // заголовок. Матчить нечем — честно откатываемся на весь системный звук.
+  if (!label || /^(?:screen|window|web-contents-media-stream):/i.test(label)) {
+    console.info('[voice] auto audio: opaque track label, using system loopback:', label)
+    return undefined
+  }
+
+  try {
+    const windows = await listCaptureWindows()
+    const want = label.toLowerCase()
+    const exact = windows.find((w) => w.title.toLowerCase() === want)
+    // Chromium может обрезать/дополнить название окна — принимаем и вложение
+    // строк, но только достаточно длинных, чтобы «a» не сматчилась со всем.
+    const candidate =
+      exact ??
+      windows
+        .filter((w) => {
+          const t = w.title.toLowerCase()
+          if (Math.min(t.length, want.length) < 5) return false
+          return t.includes(want) || want.includes(t)
+        })
+        .sort((a, b) => b.title.length - a.title.length)[0]
+    if (!candidate) {
+      console.info('[voice] auto audio: no window matched label, using system loopback:', label)
+      return undefined
+    }
+    console.info(
+      `[voice] auto audio: "${label}" -> ${candidate.name} (pid ${candidate.pid})`,
+    )
+    return candidate.pid
+  } catch (err) {
+    console.warn('[voice] auto audio match failed', err)
+    return undefined
+  }
+}
+
+/**
+ * Публикует нативно захваченный звук (WASAPI) как ScreenShareAudio-трек той же
+ * демки (T-094 Stage C). `pid` задан → звук одного приложения (без эха), иначе —
+ * весь системный звук. Хэндл регистрируется в lib/livekit, чтобы трек корректно
+ * снимался при stopShare / остановке из ОС-бара / выходе из комнаты. Не
+ * критично: при ошибке демка остаётся, просто без звука.
+ */
+async function publishNativeScreenAudio(room: Room, pid?: number): Promise<void> {
+  try {
+    const native = await createNativeAudioTrack(pid !== undefined ? { pid } : {})
     // userProvidedTrack=true: трек наш (из MSTG), LiveKit не управляет его
     // жизненным циклом и не пытается рестартить через getUserMedia.
     const localTrack = new LocalAudioTrack(native.track, undefined, true)
@@ -227,9 +312,17 @@ export function useScreenShare(): UseScreenShare {
 
       if (useNativeAudio) {
         // Нативный путь: видео уже опубликовано, теперь публикуем нативный звук
-        // отдельным ScreenShareAudio-треком. Не критично — если упадёт, демка
-        // остаётся (просто без звука).
-        await publishNativeScreenAudio(room)
+        // отдельным ScreenShareAudio-треком. Источник: 'auto' — приложение
+        // выбранного окна (по видео-треку), 'process' — выбранное в пикере,
+        // 'system' — весь звук. Не критично — если упадёт, демка остаётся
+        // (просто без звука).
+        const pid =
+          settings.audioSource.kind === 'auto'
+            ? cap.processLoopback
+              ? await resolveAutoAudioPid(room)
+              : undefined
+            : await resolveNativeAudioPid(settings.audioSource, cap)
+        await publishNativeScreenAudio(room, pid)
       } else if (withAudio) {
         // Capability-зонд getDisplayMedia: попросили audio, успешно опубликовались
         // — проверяем, приехал ли ScreenShareAudio. В Chromium на некоторых
@@ -259,18 +352,5 @@ export function useScreenShare(): UseScreenShare {
     }
   }, [])
 
-  const restartShare = useCallback(async (): Promise<void> => {
-    const room = getActiveRoom()
-    if (!room) return
-    const sharing = useVoiceStore.getState().screenSharing
-    if (!sharing) return
-    await stopShare()
-    // Дать LiveKit зафиналить unpublish: серверный SFU должен снять подписки
-    // у зрителей до того, как мы опубликуем новый track тем же source'ом.
-    // На практике хватает ~250ms; больше — заметная пауза для зрителей.
-    await new Promise<void>((r) => setTimeout(r, 250))
-    await startShare()
-  }, [startShare, stopShare])
-
-  return { startShare, stopShare, restartShare }
+  return { startShare, stopShare }
 }

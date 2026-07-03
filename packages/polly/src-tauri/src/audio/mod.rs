@@ -127,70 +127,70 @@ pub fn audio_capture_capability() -> AudioCapability {
     detect_capability()
 }
 
-/// Итог тестовой записи (Stage A): путь к WAV + параметры потока.
+/// Аудио-сессия для пользовательского пикера: pid + имя + играет ли сейчас.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct CaptureResult {
-    pub path: String,
-    pub sample_rate: u32,
-    pub channels: u16,
-    pub frames: u64,
-    pub bytes: u64,
-}
-
-/// Stage A (debug): записать `seconds` секунд системного звука (loopback) в WAV
-/// и вернуть путь. Verification-артефакт — проигрываешь файл, слышишь системный
-/// звук. Реальная публикация захвата в LiveKit будет в Stage C.
-///
-/// Команда async + spawn_blocking: COM-цикл блокирующий, нельзя держать им
-/// ни main-поток, ни async-воркер Tauri.
-#[tauri::command]
-pub async fn audio_capture_record(seconds: u32) -> Result<CaptureResult, CmdError> {
-    let secs = seconds.clamp(1, 30);
-    #[cfg(windows)]
-    {
-        let path = std::env::temp_dir().join("kakdela-loopback-capture.wav");
-        let summary = tauri::async_runtime::spawn_blocking(move || capture::record_loopback(secs, path))
-            .await
-            .map_err(|_| CmdError::internal("capture-panic", "capture task panicked"))?
-            .map_err(|e| CmdError::internal("capture-failed", &e))?;
-        Ok(CaptureResult {
-            path: summary.path.to_string_lossy().into_owned(),
-            sample_rate: summary.sample_rate,
-            channels: summary.channels,
-            frames: summary.frames,
-            bytes: summary.bytes,
-        })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = secs;
-        Err(CmdError::new("unsupported", "loopback capture is Windows-only"))
-    }
-}
-
-/// Процесс для пикера Stage B (PID + имя exe).
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ProcessEntry {
+pub struct AudioSessionEntry {
     pub pid: u32,
     pub name: String,
+    pub active: bool,
 }
 
-/// Список процессов для выбора в пикере «звук приложения» (Stage B).
+/// Список «звучащих» приложений (аудио-сессии устройства вывода) — основа
+/// пикера «звук приложения». Не сыпет все процессы системы, а только те, что
+/// реально способны звучать.
+///
+/// async + spawn_blocking ОБЯЗАТЕЛЬНО: внутри COM-цикл (`CoInitializeEx`
+/// MULTITHREADED). Синхронная команда исполнилась бы на главном потоке, который
+/// уже COM-инициализирован как STA → `CoInitializeEx(MTA)` вернул бы
+/// RPC_E_CHANGED_MODE и список оказался бы пуст. На отдельном blocking-потоке MTA
+/// проходит.
 #[tauri::command]
-pub fn audio_list_processes() -> Result<Vec<ProcessEntry>, CmdError> {
+pub async fn audio_list_sessions() -> Result<Vec<AudioSessionEntry>, CmdError> {
     #[cfg(windows)]
     {
-        let list = capture::list_processes().map_err(|e| CmdError::internal("process-list-failed", &e))?;
+        let list = tauri::async_runtime::spawn_blocking(capture::list_audio_sessions)
+            .await
+            .map_err(|_| CmdError::internal("audio-session-panic", "session list task panicked"))?
+            .map_err(|e| CmdError::internal("audio-session-list-failed", &e))?;
         Ok(list
             .into_iter()
-            .map(|p| ProcessEntry { pid: p.pid, name: p.name })
+            .map(|s| AudioSessionEntry { pid: s.pid, name: s.name, active: s.active })
             .collect())
     }
     #[cfg(not(windows))]
     {
-        Err(CmdError::new("unsupported", "process list is Windows-only"))
+        Err(CmdError::new("unsupported", "audio session list is Windows-only"))
+    }
+}
+
+/// Видимое окно для автопривязки звука (пикер демо): pid + заголовок + имя exe.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureWindowEntry {
+    pub pid: u32,
+    pub title: String,
+    pub name: String,
+}
+
+/// Список видимых top-level окон с заголовками. Нужен автопривязке звука демки:
+/// после выбора окна в системном пикере JS матчит `track.label` (заголовок окна
+/// в Chromium) на pid и запускает process-loopback именно этого приложения.
+/// user32 + toolhelp без COM → обычная sync-команда.
+#[tauri::command]
+pub fn audio_list_windows() -> Result<Vec<CaptureWindowEntry>, CmdError> {
+    #[cfg(windows)]
+    {
+        let list =
+            capture::list_capture_windows().map_err(|e| CmdError::internal("window-list-failed", &e))?;
+        Ok(list
+            .into_iter()
+            .map(|w| CaptureWindowEntry { pid: w.pid, title: w.title, name: w.name })
+            .collect())
+    }
+    #[cfg(not(windows))]
+    {
+        Err(CmdError::new("unsupported", "window list is Windows-only"))
     }
 }
 
@@ -276,35 +276,4 @@ pub fn audio_stream_stop(state: State<AudioStreamState>) -> Result<(), CmdError>
         let _ = h.join.join();
     }
     Ok(())
-}
-
-/// Stage B (debug): записать `seconds` секунд звука процесса `pid` (и его дерева)
-/// в WAV. По-дискордовски — захват одного приложения. Verification-артефакт.
-#[tauri::command]
-pub async fn audio_capture_record_process(
-    pid: u32,
-    seconds: u32,
-) -> Result<CaptureResult, CmdError> {
-    let secs = seconds.clamp(1, 30);
-    #[cfg(windows)]
-    {
-        let path = std::env::temp_dir().join("kakdela-process-capture.wav");
-        let summary =
-            tauri::async_runtime::spawn_blocking(move || capture::record_process_loopback(pid, secs, path))
-                .await
-                .map_err(|_| CmdError::internal("capture-panic", "capture task panicked"))?
-                .map_err(|e| CmdError::internal("capture-failed", &e))?;
-        Ok(CaptureResult {
-            path: summary.path.to_string_lossy().into_owned(),
-            sample_rate: summary.sample_rate,
-            channels: summary.channels,
-            frames: summary.frames,
-            bytes: summary.bytes,
-        })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (pid, secs);
-        Err(CmdError::new("unsupported", "process loopback is Windows-only"))
-    }
 }

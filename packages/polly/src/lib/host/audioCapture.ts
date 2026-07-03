@@ -1,8 +1,7 @@
-// Нативный захват системного/процессного звука для демонстрации (T-094).
-//
-// Stage 0: спрашиваем у нативной стороны (src-tauri/src/audio/mod.rs), что
-// умеет ОС. Сам захват PCM и мост в WebRTC (кастомный трек в LiveKit) добавятся
-// следующими стадиями. На web/не-Tauri — «не поддерживается»: нативный захват
+// Нативный захват системного/процессного звука для демонстрации (T-094):
+// возможности ОС, живой список звучащих приложений/окон и стрим PCM, который
+// мостится в LiveKit как отдельный ScreenShareAudio-трек (см. nativeAudioTrack.ts
+// и useScreenShare.ts). На web/не-Tauri — «не поддерживается»: нативный захват
 // возможен только в Windows-сборке.
 
 export type AudioCaptureMode = 'unsupported' | 'system-loopback' | 'process-loopback'
@@ -42,51 +41,41 @@ export async function getAudioCaptureCapability(): Promise<AudioCaptureCapabilit
   }
 }
 
-/** Итог тестовой записи системного звука (Stage A). */
-export interface LoopbackCaptureResult {
-  /** Путь к WAV-файлу. */
-  path: string
-  sampleRate: number
-  channels: number
-  frames: number
-  bytes: number
+/** Приложение с аудио-сессией на устройстве вывода (для пикера источника звука). */
+export interface AudioSessionEntry {
+  pid: number
+  name: string
+  /** Играет ли прямо сейчас (хоть одна сессия активна). */
+  active: boolean
 }
 
 /**
- * Stage A (debug): записать `seconds` секунд системного звука в WAV и вернуть
- * путь. Verification-артефакт — проигрываешь файл, слышишь системный звук.
- * Только в нативной Windows-сборке; на web — бросает.
+ * Список «звучащих» приложений (аудио-сессии устройства вывода) — то, что реально
+ * способно дать звук в демку. Источник для пользовательского пикера. На web — пусто.
  */
-export async function recordLoopbackCapture(seconds: number): Promise<LoopbackCaptureResult> {
-  if (!isTauri()) throw new Error('loopback capture is Windows-only')
+export async function listAudioSessions(): Promise<AudioSessionEntry[]> {
+  if (!isTauri()) return []
   const mod = await import('@tauri-apps/api/core')
-  return mod.invoke<LoopbackCaptureResult>('audio_capture_record', { seconds })
+  return mod.invoke<AudioSessionEntry[]>('audio_list_sessions')
 }
 
-/** Процесс для пикера Stage B (PID + имя exe). */
-export interface ProcessEntry {
+/** Видимое окно для автопривязки звука: pid + заголовок + имя exe. */
+export interface CaptureWindowEntry {
   pid: number
+  title: string
   name: string
 }
 
-/** Список процессов для выбора в пикере «звук приложения». На web — пусто. */
-export async function listAudioProcesses(): Promise<ProcessEntry[]> {
+/**
+ * Список видимых top-level окон с заголовками. Нужен автопривязке звука демки
+ * (audioSource 'auto'): заголовок выбранного в системном пикере окна
+ * (`track.label` в Chromium) матчится на pid → process loopback именно этого
+ * приложения. На web — пусто.
+ */
+export async function listCaptureWindows(): Promise<CaptureWindowEntry[]> {
   if (!isTauri()) return []
   const mod = await import('@tauri-apps/api/core')
-  return mod.invoke<ProcessEntry[]>('audio_list_processes')
-}
-
-/**
- * Stage B (debug): записать `seconds` секунд звука процесса `pid` (и его дерева)
- * в WAV. По-дискордовски — захват одного приложения. Только Windows-сборка.
- */
-export async function recordProcessCapture(
-  pid: number,
-  seconds: number,
-): Promise<LoopbackCaptureResult> {
-  if (!isTauri()) throw new Error('process loopback is Windows-only')
-  const mod = await import('@tauri-apps/api/core')
-  return mod.invoke<LoopbackCaptureResult>('audio_capture_record_process', { pid, seconds })
+  return mod.invoke<CaptureWindowEntry[]>('audio_list_windows')
 }
 
 /** Параметры активного стрима + способ его остановить. */
