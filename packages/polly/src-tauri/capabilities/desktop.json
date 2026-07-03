@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "desktop-only разрешения: autostart-плагин под Android/iOS не собирается (Cargo cfg), и его permissions в мобильной сборке неизвестны — capability обязана быть платформенной, иначе android build падает",
+  "platforms": ["linux", "macOS", "windows"],
+  "windows": ["main", "call-popup"],
+  "permissions": [
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
+  ]
+}
