@@ -1,6 +1,6 @@
 [package]
 name = "kakdela-polly"
-version = "0.6.8"
+version = "0.7.0"
 description = "КакДела desktop client"
 authors = ["you"]
 edition = "2021"

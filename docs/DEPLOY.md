@@ -184,7 +184,7 @@ docker compose -f docker-compose.prod.yml exec postgres \
 
 Дальше инвайты для друзей создаются в UI (настройки сервера → инвайты), francine больше не нужен.
 
-## 8. Desktop-клиент (.msi) для друзей
+## 8. Desktop-клиент (.exe) для друзей
 
 Собирается локально на Windows-машине, не на VPS:
 
@@ -198,10 +198,10 @@ VITE_LIVEKIT_URL=wss://kakdela.example.com/livekit
 
 pnpm install
 pnpm --filter @kakdela/polly tauri:build
-# → packages/polly/src-tauri/target/release/bundle/msi/*.msi
+# → packages/polly/src-tauri/target/release/bundle/nsis/*-setup.exe
 ```
 
-Раздай `.msi` друзьям вместе с инвайт-кодом. Пока десктоп не собран, все могут пользоваться web-версией на `https://<домен>`.
+Раздай установщик `.exe` друзьям вместе с инвайт-кодом. Пока десктоп не собран, все могут пользоваться web-версией на `https://<домен>`.
 
 ## 9. Чек-лист после деплоя
 
@@ -229,6 +229,33 @@ docker compose -f docker-compose.prod.yml exec backup kd-backup
 
 Данные (`docker-compose.prod.yml`) при обновлениях кода не трогаются. `docker compose down` БЕЗ `-v` данные не удаляет; `-v` — удаляет всё.
 
+### Обновление старой инсталляции: появился блок `turn:`
+
+`git pull` обновляет только **пример** (`ops/livekit/livekit.prod.example.yaml`);
+рабочий `livekit.prod.yaml` создавался из него один раз и новых параметров сам
+не получит. Если конфиг создавался до появления TURN (§3a), после `git pull`
+доведи его руками:
+
+```bash
+# 1. Добавь в livekit.prod.yaml блок `turn:` — образец в
+#    ops/livekit/livekit.prod.example.yaml (enabled: true, domain = KD_DOMAIN,
+#    udp_port: 3478; строки TURNS/TLS пока оставь закомментированными — §3a).
+
+# 2. Открой порты реле:
+ufw allow 3478/udp                 # TURN/UDP
+ufw allow 5349/tcp                 # TURNS (TURN-over-TLS)
+
+# 3. Пересоздай livekit: в docker-compose.prod.yml добавились проброс
+#    3478/5349 и cert-том Caddy — простого restart недостаточно.
+docker compose -f docker-compose.prod.yml up -d livekit
+
+# 4. TURNS — вторым шагом, когда Caddy уже выписал серт: раскомментируй
+#    tls_port/cert_file/key_file и `docker restart kd-livekit` (§3a).
+```
+
+Проверка: в `docker logs kd-livekit` на старте есть строка про TURN, а звонок
+с мобильного хотспота (другой NAT) соединяется.
+
 ## 11. Если что-то не работает
 
 | Симптом | Куда смотреть |
@@ -243,7 +270,7 @@ docker compose -f docker-compose.prod.yml exec backup kd-backup
 | Голос не подключается вообще | `docker logs kd-livekit`. `LIVEKIT_API_SECRET` в `.env` и `keys` в `livekit.prod.yaml` совпадают? |
 | `internal-error` при входе в голосовой канал | `docker logs kd-speedy`. Задан ли `LIVEKIT_ADMIN_URL=http://livekit:7880` в `.env`? Без него speedy пытается достучаться до admin-API LiveKit через публичный домен — изнутри docker-сети это hairpin, который обычно не проходит. |
 | Presence в голосовом канале не обновляется | Webhook: в `docker logs kd-livekit` ошибки доставки на `http://speedy:3001/...`? Оба контейнера в сети `kd-net` (`docker network inspect kd-net`)? |
-| Поменял домен — клиент ходит на старый | `VITE_*` запечены в бандл: пересобери `kakdela/caddy` (и `.msi`). |
+| Поменял домен — клиент ходит на старый | `VITE_*` запечены в бандл: пересобери `kakdela/caddy` (и `.exe`-установщик). |
 
 ## Известные упрощения тестового деплоя
 
