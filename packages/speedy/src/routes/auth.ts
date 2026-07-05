@@ -56,6 +56,16 @@ function clientMeta(req: { ip: string; headers: Record<string, string | string[]
   }
 }
 
+/**
+ * Нативный Tauri-клиент (desktop/mobile). Его WebView живёт на
+ * tauri.localhost — кросс-сайт к API, SameSite=Strict cookie туда не
+ * отправляется (а Android WebView third-party cookie и не сохранит). Таким
+ * клиентам refresh-токен отдаём в body, web-клиенту — только httpOnly-cookie.
+ */
+function isNativeClient(req: { headers: Record<string, string | string[] | undefined> }): boolean {
+  return req.headers['x-kd-client'] === 'tauri'
+}
+
 async function issueSession(userId: string, ipAddress: string, userAgent: string | null) {
   const accessToken = await issueAccessToken(userId)
   const refresh = await issueRefreshToken(userId)
@@ -167,7 +177,11 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
       const { accessToken, refresh } = await issueSession(inserted.id, ipAddress, userAgent)
 
       void reply.setCookie(REFRESH_COOKIE, refresh.token, refreshCookieOptions(refresh.expiresAt))
-      return reply.code(200).send({ accessToken, user: publicUser(inserted) })
+      return reply.code(200).send({
+        accessToken,
+        user: publicUser(inserted),
+        ...(isNativeClient(req) ? { refreshToken: refresh.token } : {}),
+      })
     },
   )
 
@@ -205,7 +219,11 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
       const { accessToken, refresh } = await issueSession(user.id, ipAddress, userAgent)
 
       void reply.setCookie(REFRESH_COOKIE, refresh.token, refreshCookieOptions(refresh.expiresAt))
-      return reply.code(200).send({ accessToken, user: publicUser(user) })
+      return reply.code(200).send({
+        accessToken,
+        user: publicUser(user),
+        ...(isNativeClient(req) ? { refreshToken: refresh.token } : {}),
+      })
     },
   )
 
@@ -255,7 +273,11 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
       const { accessToken, refresh } = await issueSession(user.id, ipAddress, userAgent)
 
       void reply.setCookie(REFRESH_COOKIE, refresh.token, refreshCookieOptions(refresh.expiresAt))
-      return reply.code(200).send({ accessToken, user: publicUser(user) })
+      return reply.code(200).send({
+        accessToken,
+        user: publicUser(user),
+        ...(isNativeClient(req) ? { refreshToken: refresh.token } : {}),
+      })
     },
   )
 
@@ -264,11 +286,14 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
     '/auth/logout',
     {
       schema: {
+        body: RefreshRequestSchema.nullish(),
         response: { 204: z.null() },
       },
     },
     async (req, reply) => {
-      const token = req.cookies[REFRESH_COOKIE]
+      // Нативные клиенты держат refresh в body (cookie у них нет — см.
+      // isNativeClient); web — в httpOnly-cookie.
+      const token = req.cookies[REFRESH_COOKIE] ?? req.body?.refreshToken
       if (token) {
         const tokenHash = hashRefreshToken(token)
         await db.delete(sessions).where(eq(sessions.refreshTokenHash, tokenHash))

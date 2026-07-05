@@ -358,6 +358,11 @@ export type RefreshRequest = z.infer<typeof RefreshRequestSchema>
 export const AuthResponseSchema = z.object({
   accessToken: z.string(),
   user: UserSchema,
+  /** Только для нативных клиентов (заголовок X-KD-Client: tauri): их WebView
+      живёт на tauri.localhost, и SameSite-cookie до API не доезжает — refresh
+      уезжает в body и хранится в шифрованном сторе клиента. Web-клиент
+      same-origin и остаётся на httpOnly-cookie (поле отсутствует). */
+  refreshToken: z.string().optional(),
 })
 export type AuthResponse = z.infer<typeof AuthResponseSchema>
 

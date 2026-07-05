@@ -2,7 +2,20 @@ import type { User } from '@kakdela/ginzu'
 
 import { useAuthStore } from '../features/auth/store.js'
 import { friendlyMessage } from './errorMessages.js'
+import { secrets } from './host/secrets.js'
 import { SPEEDY_URL } from './serverUrl.js'
+
+// Нативный Tauri-клиент представляется серверу заголовком: WebView живёт на
+// tauri.localhost (кросс-сайт к API), SameSite=Strict refresh-cookie туда не
+// доезжает — сервер в ответ отдаёт refresh-токен в body, мы храним его в
+// шифрованном сторе. Web-клиент same-origin — остаётся на httpOnly-cookie.
+const NATIVE_CLIENT_HEADERS: Record<string, string> =
+  typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+    ? { 'X-KD-Client': 'tauri' }
+    : {}
+
+/** Ключ refresh-токена в secrets (только нативные клиенты). */
+export const REFRESH_TOKEN_KEY = 'kd:refreshToken'
 
 export class ApiError extends Error {
   constructor(
@@ -21,11 +34,23 @@ export class ApiError extends Error {
 const REQUEST_TIMEOUT_MS = 25_000
 
 async function performRefresh(): Promise<string | null> {
+  // Нативный клиент шлёт refresh в body (cookie у него нет); web — cookie.
+  let body: string | undefined
+  try {
+    const stored = await secrets.get(REFRESH_TOKEN_KEY)
+    if (stored) body = JSON.stringify({ refreshToken: stored })
+  } catch { /* стор недоступен — остаётся cookie-путь */ }
+
   let res: Response
   try {
     res = await fetch(`${SPEEDY_URL}/api/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
+      headers: {
+        ...(body != null ? { 'Content-Type': 'application/json' } : {}),
+        ...NATIVE_CLIENT_HEADERS,
+      },
+      ...(body != null ? { body } : {}),
     })
   } catch {
     // Сеть моргнула во время рефреша — НЕ разлогиниваем. Бросаем ошибку:
@@ -34,7 +59,12 @@ async function performRefresh(): Promise<string | null> {
   }
   // Ответ получен, но не ok (401) — refresh-токен истёк/отозван: честный логаут.
   if (!res.ok) return null
-  const data = await res.json() as { accessToken: string; user: User }
+  const data = await res.json() as { accessToken: string; user: User; refreshToken?: string }
+  // Сервер ротирует refresh атомарно — новый токен персистим СРАЗУ, иначе
+  // следующий холодный старт придёт со старым и получит session-revoked.
+  if (data.refreshToken) {
+    try { await secrets.set(REFRESH_TOKEN_KEY, data.refreshToken) } catch { /* не смертельно: доживём на access */ }
+  }
   useAuthStore.getState().setSession(data.user, data.accessToken)
   return data.accessToken
 }
@@ -76,6 +106,7 @@ async function doRequest(path: string, token: string | null, init?: RequestInit)
         // что ломало DELETE-запросы (удаление сообщений, снятие реакций).
         ...(init?.body != null ? { 'Content-Type': 'application/json' } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...NATIVE_CLIENT_HEADERS,
         ...(init?.headers as Record<string, string> ?? {}),
       },
       credentials: 'include',

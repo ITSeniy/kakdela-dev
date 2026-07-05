@@ -1,6 +1,6 @@
 import type { User } from '@kakdela/ginzu'
 
-import { ApiError, apiFetch, refreshSession } from '../../lib/api.js'
+import { ApiError, apiFetch, REFRESH_TOKEN_KEY, refreshSession } from '../../lib/api.js'
 import { secrets } from '../../lib/host/secrets.js'
 import { SPEEDY_URL } from '../../lib/serverUrl.js'
 import { useAuthStore } from './store.js'
@@ -13,13 +13,17 @@ export type InviteInfo = { serverName: string; serverIcon: string | null; expire
 const SESSION_KEY = 'kd:session'
 const LEGACY_TOKEN_KEY = 'kd:accessToken'
 
-async function persistSession(user: User, accessToken: string): Promise<void> {
+async function persistSession(user: User, accessToken: string, refreshToken?: string): Promise<void> {
   await secrets.set(SESSION_KEY, JSON.stringify({ user, accessToken }))
+  // Нативный клиент: сервер отдал refresh в body (X-KD-Client, см. lib/api) —
+  // храним рядом, cookie-путь для tauri.localhost не работает (SameSite).
+  if (refreshToken) await secrets.set(REFRESH_TOKEN_KEY, refreshToken)
 }
 
 async function clearSession(): Promise<void> {
   await secrets.delete(SESSION_KEY)
   await secrets.delete(LEGACY_TOKEN_KEY)
+  await secrets.delete(REFRESH_TOKEN_KEY)
   useAuthStore.getState().clear()
 }
 
@@ -37,14 +41,14 @@ export async function lookupInvite(code: string): Promise<InviteInfo> {
   return res.json() as Promise<InviteInfo>
 }
 
-type AuthResponse = { accessToken: string; user: User }
+type AuthResponse = { accessToken: string; user: User; refreshToken?: string }
 
 export async function login(email: string, password: string): Promise<void> {
   const data = await apiFetch<AuthResponse>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   })
-  await persistSession(data.user, data.accessToken)
+  await persistSession(data.user, data.accessToken, data.refreshToken)
   useAuthStore.getState().setSession(data.user, data.accessToken)
 }
 
@@ -60,13 +64,20 @@ export async function register(params: {
     method: 'POST',
     body: JSON.stringify(params),
   })
-  await persistSession(data.user, data.accessToken)
+  await persistSession(data.user, data.accessToken, data.refreshToken)
   useAuthStore.getState().setSession(data.user, data.accessToken)
 }
 
 export async function logout(): Promise<void> {
   try {
-    await apiFetch<void>('/api/auth/logout', { method: 'POST' })
+    // Нативный клиент отдаёт refresh в body, чтобы сервер отозвал сессию
+    // (cookie у него нет); web-клиенту хватает cookie.
+    let refreshToken: string | null = null
+    try { refreshToken = await secrets.get(REFRESH_TOKEN_KEY) } catch { /* ignore */ }
+    await apiFetch<void>('/api/auth/logout', {
+      method: 'POST',
+      ...(refreshToken ? { body: JSON.stringify({ refreshToken }) } : {}),
+    })
   } catch { /* ignore network errors on logout */ }
   await clearSession()
 }
