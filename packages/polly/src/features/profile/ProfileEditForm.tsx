@@ -47,22 +47,47 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
   const dirty =
     displayName !== profile.displayName
     || (customStatus || null) !== (profile.customStatus ?? null)
-    || avatarUrl !== profile.avatarUrl
     || (about.trim() || null) !== (profile.about ?? null)
     || timezone !== profile.timezone
     || bannerUrl !== profile.bannerUrl
     || newPassword !== ''
 
+  // Аватар сохраняется СРАЗУ (тестеры жали «сохранить» в кроппере и считали
+  // дело сделанным, а страница ждала второго «сохранить» внизу). Поэтому он
+  // не участвует ни в dirty, ни в общем save().
+  async function saveAvatar(url: string | null) {
+    const updated = await patchMe({ avatarUrl: url })
+    setAvatarUrl(url)
+    if (accessToken) updateSession(updated, accessToken)
+    void queryClient.invalidateQueries({ queryKey: ['user-profile', updated.id] })
+    void queryClient.invalidateQueries({ queryKey: ['members'] })
+  }
+
   async function onAvatarCropConfirm(blob: Blob) {
     setAvatarBusy(true)
     setError(null)
     try {
-      const file = new File([blob], `avatar-${Date.now()}.jpg`, { type: 'image/jpeg' })
+      const isGif = blob.type === 'image/gif'
+      const file = new File([blob], `avatar-${Date.now()}.${isGif ? 'gif' : 'jpg'}`, {
+        type: isGif ? 'image/gif' : 'image/jpeg',
+      })
       const attachment = await uploadAttachment(file)
-      setAvatarUrl(attachment.url)
+      await saveAvatar(attachment.url)
       setCropperOpen(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'не удалось загрузить аватар')
+    } finally {
+      setAvatarBusy(false)
+    }
+  }
+
+  async function onAvatarRemove() {
+    setAvatarBusy(true)
+    setError(null)
+    try {
+      await saveAvatar(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'не удалось убрать аватар')
     } finally {
       setAvatarBusy(false)
     }
@@ -91,7 +116,6 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
       if (displayName !== profile.displayName) updates.displayName = displayName
       const nextStatus = customStatus.trim() === '' ? null : customStatus
       if (nextStatus !== (profile.customStatus ?? null)) updates.customStatus = nextStatus
-      if (avatarUrl !== profile.avatarUrl) updates.avatarUrl = avatarUrl
       const nextAbout = about.trim() === '' ? null : about.trim()
       if (nextAbout !== (profile.about ?? null)) updates.about = nextAbout
       if (timezone !== profile.timezone) updates.timezone = timezone
@@ -120,16 +144,17 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
 
   return (
     <div className="flex flex-col gap-[18px]">
-      <Field label="аватар" hint="jpeg / png / webp до 2 МБ">
+      <Field label="аватар" hint="jpeg / png / webp / gif до 10 МБ · gif оживает в войсе · сохраняется сразу">
         {cropperOpen ? (
           <AvatarCropper
             initialUrl={avatarUrl}
             onConfirm={onAvatarCropConfirm}
             onCancel={() => setCropperOpen(false)}
+            allowGif
           />
         ) : (
           <div className="flex items-center gap-4">
-            <Avatar name={displayName} avatarUrl={avatarUrl} size={72} />
+            <Avatar name={displayName} avatarUrl={avatarUrl} size={72} animate />
             <div className="space-y-1.5">
               <button
                 type="button"
@@ -137,13 +162,14 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
                 disabled={avatarBusy}
                 className="px-3 py-1.5 rounded border border-kd-border text-[11px] font-mono text-kd-text hover:bg-kd-panel-hi disabled:opacity-50"
               >
-                {avatarBusy ? 'грузим…' : 'изменить'}
+                {avatarBusy ? 'сохраняем…' : 'изменить'}
               </button>
               {avatarUrl && (
                 <button
                   type="button"
-                  onClick={() => setAvatarUrl(null)}
-                  className="block px-3 py-1.5 rounded border border-kd-border text-[11px] font-mono text-kd-danger hover:bg-kd-panel-hi"
+                  onClick={() => void onAvatarRemove()}
+                  disabled={avatarBusy}
+                  className="block px-3 py-1.5 rounded border border-kd-border text-[11px] font-mono text-kd-danger hover:bg-kd-panel-hi disabled:opacity-50"
                 >
                   убрать
                 </button>
@@ -163,6 +189,7 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
           maxLength={64}
+          autoComplete="off"
           className={INPUT_CLS}
         />
       </Field>
@@ -173,6 +200,7 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
           onChange={(e) => setCustomStatus(e.target.value.slice(0, 128))}
           maxLength={128}
           placeholder="пьёт какао ☕"
+          autoComplete="off"
           className={INPUT_CLS}
         />
       </Field>
@@ -193,6 +221,18 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
 
       <Field label="смена пароля" hint="требуется текущий пароль; смена сбрасывает все сессии">
         <div className="flex flex-col gap-2.5">
+          {/* Decoy-«логин» для менеджера паролей: без него Chrome в web-режиме
+              назначал «логином» ближайший текстовый input выше (поле статуса)
+              и заливал туда сохранённый email. autoComplete="off" на текстовых
+              полях Chrome для логин-пар игнорирует — нужен явный якорь. */}
+          <input
+            type="text"
+            autoComplete="username"
+            defaultValue=""
+            tabIndex={-1}
+            aria-hidden="true"
+            className="absolute w-px h-px opacity-0 pointer-events-none -z-10"
+          />
           <input
             type="password"
             autoComplete="current-password"
