@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { z } from 'zod'
 
@@ -7,11 +7,13 @@ import {
   VoiceJoinResponseSchema,
   VoiceModerateRequestSchema,
   VoiceParticipantsResponseSchema,
+  VoicePreviewResponseSchema,
+  VoicePreviewUploadRequestSchema,
   VoiceSelfStateRequestSchema,
   type VoiceParticipantPublic,
 } from '@kakdela/ginzu/api-types'
 
-import { channels, dmChannels, users } from '../db/schema.js'
+import { channels, dmChannels, serverMembers, users } from '../db/schema.js'
 import { db } from '../lib/db.js'
 import { assertMember, assertPermission, forbidden, notFound } from '../lib/permissions.js'
 import { redis } from '../lib/redis.js'
@@ -29,6 +31,13 @@ const roomUsersKey = (channelId: string) => `voice:channel:${channelId}:users`
 const participantsCacheKey = (channelId: string) =>
   `voice:channel:${channelId}:participants-cache`
 const PARTICIPANTS_CACHE_TTL_SEC = 5
+
+// Hover-превью демки: периодический JPEG-кадр от стримера. TTL с запасом
+// перекрывает интервал заливки (~15 сек) — стрим кончился → превью само
+// исчезло, отдельной очистки не нужно.
+const screenPreviewKey = (channelId: string, userId: string) =>
+  `voice:channel:${channelId}:screen-preview:${userId}`
+const SCREEN_PREVIEW_TTL_SEC = 45
 
 // Серверная модерация (mute/deafen от админа): hash userId → JSON.
 // mutedBefore — был ли mute ДО deafen, un-deafen возвращает как было
@@ -181,9 +190,15 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
 
       await assertMember(userId, channel.serverId)
 
+      // Серверный ник (если задан) поверх глобального имени — LiveKit-имя
+      // участника должно совпадать с профилем на этом сервере.
       const userRows = await db
-        .select({ displayName: users.displayName })
+        .select({ displayName: users.displayName, nickname: serverMembers.nickname })
         .from(users)
+        .leftJoin(serverMembers, and(
+          eq(serverMembers.userId, users.id),
+          eq(serverMembers.serverId, channel.serverId),
+        ))
         .where(eq(users.id, userId))
         .limit(1)
       const user = userRows[0]
@@ -192,7 +207,7 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
       const token = await issueToken({
         userId,
         channelId,
-        displayName: user.displayName,
+        displayName: user.nickname ?? user.displayName,
       })
 
       await redis.sadd(roomUsersKey(channelId), userId)
@@ -264,6 +279,89 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
 
       const participants = await getParticipantsCached(channelId)
       return reply.code(200).send({ participants })
+    },
+  )
+
+  // ───── POST /api/voice/:channelId/screen-preview ─────
+  //
+  // Стример заливает кадр своей демки (hover-превью для тех, кто не в
+  // комнате). Принимаем только от реального участника комнаты — иначе любой
+  // member мог бы подсунуть «превью» чужому стриму.
+  app.post(
+    '/voice/:channelId/screen-preview',
+    {
+      preHandler: app.authenticate,
+      schema: {
+        params: z.object({ channelId: z.string().uuid() }),
+        body: VoicePreviewUploadRequestSchema,
+        response: {
+          204: z.null(),
+          401: ErrorBodySchema,
+          403: ErrorBodySchema,
+          404: ErrorBodySchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const { channelId } = req.params
+      const userId = req.authUser!.id
+
+      const channelRows = await db
+        .select({ serverId: channels.serverId, kind: channels.kind })
+        .from(channels)
+        .where(eq(channels.id, channelId))
+        .limit(1)
+      const channel = channelRows[0]
+      if (!channel || !channel.serverId || channel.kind !== 'voice') {
+        throw notFound('channel-not-found', 'voice channel not found')
+      }
+      await assertMember(userId, channel.serverId)
+
+      const inRoom = await redis.sismember(roomUsersKey(channelId), userId)
+      if (!inRoom) throw forbidden('not in this voice channel')
+
+      await redis.set(
+        screenPreviewKey(channelId, userId),
+        req.body.dataBase64,
+        'EX',
+        SCREEN_PREVIEW_TTL_SEC,
+      )
+      return reply.code(204).send(null)
+    },
+  )
+
+  // ───── GET /api/voice/:channelId/screen-preview/:userId ─────
+  app.get(
+    '/voice/:channelId/screen-preview/:userId',
+    {
+      preHandler: app.authenticate,
+      schema: {
+        params: z.object({ channelId: z.string().uuid(), userId: z.string().uuid() }),
+        response: {
+          200: VoicePreviewResponseSchema,
+          401: ErrorBodySchema,
+          403: ErrorBodySchema,
+          404: ErrorBodySchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const { channelId, userId: streamerId } = req.params
+      const userId = req.authUser!.id
+
+      const channelRows = await db
+        .select({ serverId: channels.serverId })
+        .from(channels)
+        .where(eq(channels.id, channelId))
+        .limit(1)
+      const channel = channelRows[0]
+      if (!channel || !channel.serverId) throw notFound('channel-not-found', 'channel not found')
+      await assertMember(userId, channel.serverId)
+
+      const raw = await redis.get(screenPreviewKey(channelId, streamerId))
+      return reply.code(200).send({
+        dataUrl: raw ? `data:image/jpeg;base64,${raw}` : null,
+      })
     },
   )
 

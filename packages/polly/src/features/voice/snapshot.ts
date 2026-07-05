@@ -35,8 +35,17 @@ function waitForFrame(video: HTMLVideoElement, timeoutMs = 2500): Promise<void> 
  *   3. detach обязательно: иначе LiveKit считает video элемент активным
  *      подписчиком трека и будет дольше держать decoding pipeline.
  */
+export interface SnapshotOptions {
+  /** Даунскейл до этой ширины (aspect сохраняется). Для hover-превью демки
+      хватает ~480px — кадр весит десятки КБ вместо сотен. */
+  maxWidth?: number
+  /** JPEG-качество 0..1. По умолчанию 0.85 (см. пометку T-053 ниже). */
+  quality?: number
+}
+
 export async function snapshotTrack(
   track: LocalVideoTrack | RemoteVideoTrack,
+  opts: SnapshotOptions = {},
 ): Promise<Blob> {
   const video = track.attach() as HTMLVideoElement
   video.muted = true
@@ -48,9 +57,12 @@ export async function snapshotTrack(
     if (video.videoWidth === 0 || video.videoHeight === 0) {
       throw new SnapshotError('no-frame')
     }
+    const scale = opts.maxWidth && video.videoWidth > opts.maxWidth
+      ? opts.maxWidth / video.videoWidth
+      : 1
     const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
+    canvas.width = Math.round(video.videoWidth * scale)
+    canvas.height = Math.round(video.videoHeight * scale)
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new SnapshotError('no-canvas-ctx')
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
@@ -58,7 +70,7 @@ export async function snapshotTrack(
       // 0.85 — sweet-spot для JPEG: визуально без артефактов, ~200-500 KB
       // на 1080p. webp сильно меньше при том же качестве, но не везде
       // одинаково декодится (см. T-053 пометка).
-      canvas.toBlob(resolve, 'image/jpeg', 0.85)
+      canvas.toBlob(resolve, 'image/jpeg', opts.quality ?? 0.85)
     })
     if (!blob) throw new SnapshotError('blob-failed')
     return blob

@@ -2,6 +2,7 @@ import type {
   VoiceJoinResponse,
   VoiceModerateRequest,
   VoiceParticipantsResponse,
+  VoicePreviewResponse,
 } from '@kakdela/ginzu/api-types'
 
 import { apiFetch } from '../../lib/api.js'
@@ -44,6 +45,22 @@ export async function reportVoiceState(channelId: string, muted: boolean): Promi
     method: 'POST',
     body: JSON.stringify({ muted }),
   })
+}
+
+/** Залить кадр своей демки для hover-превью (base64 без data:-префикса). */
+export async function uploadScreenPreview(channelId: string, dataBase64: string): Promise<void> {
+  await apiFetch<void>(`/api/voice/${channelId}/screen-preview`, {
+    method: 'POST',
+    body: JSON.stringify({ dataBase64 }),
+  })
+}
+
+/** Последний кадр демки участника (data-URL) или null, если превью нет. */
+export async function fetchScreenPreview(channelId: string, userId: string): Promise<string | null> {
+  const res = await apiFetch<VoicePreviewResponse>(
+    `/api/voice/${channelId}/screen-preview/${userId}`,
+  )
+  return res.dataUrl
 }
 
 /** Админская модерация участника ГС: mute/deafen/kick/move. */

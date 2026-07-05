@@ -20,6 +20,7 @@ import { ForwardDialog } from './features/chat/ForwardDialog.js'
 import { CreateThreadDialog } from './features/threads/CreateThreadDialog.js'
 import { IncomingCall } from './features/voice/IncomingCall.js'
 import { useVoiceModerationSync } from './features/voice/moderationSync.js'
+import { startScreenPreviewUploader } from './features/voice/screenPreviewUploader.js'
 import { leaveVoiceRoom } from './features/voice/useVoiceRoom.js'
 import { disposeVoiceRoomSync, getActiveRoom } from './lib/livekit.js'
 import { wsClient } from './lib/ws.js'
@@ -40,6 +41,10 @@ export function App() {
   // Серверная модерация голоса: применяем admin mute/deafen/move/kick к себе.
   useVoiceModerationSync()
 
+  // Пока стримим в серверном ГС — периодически заливаем кадр демки для
+  // hover-превью у тех, кто не в комнате.
+  useEffect(() => startScreenPreviewUploader(), [])
+
   useEffect(() => {
     if (status !== 'authed') return undefined
     wsClient.connect()
@@ -51,6 +56,12 @@ export function App() {
   // (если изменился сам user) — синкаем authStore.
   useEffect(() => {
     return wsClient.on((event) => {
+      // member.profile: серверный ник/аватар участника — точечно освежаем
+      // members этого сервера (эффективные имена пересчитает бэкенд).
+      if (event.t === 'member.profile') {
+        void queryClient.invalidateQueries({ queryKey: ['members', event.serverId] })
+        return
+      }
       if (event.t !== 'user.update') return
       void queryClient.invalidateQueries({ queryKey: ['members'] })
       void queryClient.invalidateQueries({ queryKey: ['user-profile', event.userId] })

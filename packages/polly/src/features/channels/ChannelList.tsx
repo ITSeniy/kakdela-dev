@@ -28,6 +28,7 @@ import {
   patchChannel,
   type ServerDetail,
 } from '../servers/api.js'
+import { ServerProfileModal } from '../servers/ServerProfileModal.js'
 import { useNotifyPrefs } from '../notify/prefs.js'
 import { clampFixed, useAppearance } from '../settings/appearance.js'
 import { useSettingsUi } from '../settings/store.js'
@@ -87,11 +88,10 @@ function groupChannels(channels: Channel[], categories: ChannelCategory[]): Cate
 }
 
 function ChannelRow({
-  channel, active, live, unread, onClick,
+  channel, active, unread, onClick,
 }: {
   channel: Channel
   active: boolean
-  live: boolean
   unread?: boolean
   onClick: () => void
 }) {
@@ -117,7 +117,9 @@ function ChannelRow({
       {channel.kind === 'voice' ? <Icon.Speaker size={11} /> : <Icon.Hash size={11} />}
       <span className="flex-1 truncate">{channel.name}</span>
       {channel.nsfw && <Badge variant="nsfw">18+</Badge>}
-      {live && <Badge variant="live">LIVE</Badge>}
+      {/* LIVE у самого канала не показываем: бейдж означал «в канале кто-то
+          есть» и путался с LIVE у участника («стримит»). Наличие людей и так
+          видно по дереву участников под каналом. */}
     </button>
   )
 }
@@ -140,7 +142,6 @@ function VoicePresenceTree({
   rows,
   channelId,
   canManage,
-  canPreview,
   selfUserId,
   onJump,
   onUserMenu,
@@ -150,8 +151,6 @@ function VoicePresenceTree({
   rows: VoiceUserRow[]
   channelId: string
   canManage: boolean
-  /** Я подключён к этому ГС — можно тянуть hover-превью демки. */
-  canPreview: boolean
   selfUserId: string | null
   onJump(): void
   onUserMenu(e: React.MouseEvent, channelId: string, row: VoiceUserRow): void
@@ -169,7 +168,9 @@ function VoicePresenceTree({
     if (previewTimer.current) { clearTimeout(previewTimer.current); previewTimer.current = null }
   }
   function onRowEnter(row: VoiceUserRow, el: HTMLElement) {
-    if (!canPreview || !row.live) return
+    // В своей комнате карточка покажет живой трек, в чужой — серверный
+    // скриншот (стример заливает кадр раз в ~15 сек).
+    if (!row.live) return
     const rect = el.getBoundingClientRect()
     clearPreviewTimer()
     previewTimer.current = setTimeout(() => setPreview({ row, rect }), 350)
@@ -220,6 +221,7 @@ function VoicePresenceTree({
               size={18}
               ring={row.speaking ? 'var(--kd-online)' : undefined}
               ringColor="var(--kd-panel)"
+              animate={row.speaking}
             />
             <span className="flex-1 min-w-0 truncate text-[12px] text-kd-text font-medium">
               {row.name}
@@ -232,6 +234,7 @@ function VoicePresenceTree({
       })}
       {preview && (
         <ScreenHoverPreview
+          channelId={channelId}
           userId={preview.row.userId}
           displayName={preview.row.name}
           isSelf={preview.row.userId === selfUserId}
@@ -309,6 +312,9 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
   const [voiceUserMenu, setVoiceUserMenu] = useState<
     { x: number; y: number; channelId: string; row: VoiceUserRow } | null
   >(null)
+
+  // Модалка «профиль на сервере» (per-server ник/аватар).
+  const [serverProfileOpen, setServerProfileOpen] = useState(false)
 
   // Live-состояние своего голосового подключения — для точных индикаторов
   // в дереве канала, в котором мы сидим (speaking есть только там).
@@ -730,6 +736,12 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
             >
               настройки сервера
             </ServerMenuItem>
+            <ServerMenuItem
+              glyph={<span className="text-kd-accent">@</span>}
+              onClick={() => { setMenuOpen(false); setServerProfileOpen(true) }}
+            >
+              профиль на сервере
+            </ServerMenuItem>
             <div className="my-1 h-px bg-kd-border mx-2" />
             <ServerMenuItem
               glyph={<Icon.Bell size={12} className={allMessages ? 'text-kd-accent' : 'text-kd-text-mute'} />}
@@ -885,7 +897,6 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
                     <ChannelRow
                       channel={c}
                       active={isActive}
-                      live={c.kind === 'voice' && presence.length > 0}
                       unread={unreadSet.has(c.id)}
                       onClick={() => {
                         navigate(`/servers/${c.serverId}/channels/${c.id}`)
@@ -896,7 +907,6 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
                         rows={buildVoiceRows(c.id, presence)}
                         channelId={c.id}
                         canManage={canManage}
-                        canPreview={c.id === activeVoiceChannelId}
                         selfUserId={userId ?? null}
                         onJump={() => navigate(`/servers/${c.serverId}/channels/${c.id}`)}
                         onUserMenu={openVoiceUserMenu}
@@ -975,6 +985,14 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
           categories={categoryNames}
           initialCategory={createState.category}
           onClose={() => setCreateState(null)}
+        />
+      )}
+
+      {serverProfileOpen && serverId && detail && (
+        <ServerProfileModal
+          serverId={serverId}
+          serverName={detail.server.name}
+          onClose={() => setServerProfileOpen(false)}
         />
       )}
     </aside>
