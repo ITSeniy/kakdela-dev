@@ -83,7 +83,9 @@ export function Seekbar({
     return r.width ? Math.max(0, Math.min(1, (clientX - r.left) / r.width)) : 0
   }
 
-  const onDown = (e: React.MouseEvent) => {
+  // Pointer-события вместо mouse: на тачах (мобильный клиент, T-104) drag
+  // по полосе иначе не работает. touch-none гасит скролл во время перемотки.
+  const onDown = (e: React.PointerEvent) => {
     e.preventDefault()
     setDragging(true)
     onSeek(fracFrom(e.clientX))
@@ -91,13 +93,15 @@ export function Seekbar({
 
   useEffect(() => {
     if (!dragging) return
-    const move = (e: MouseEvent) => onSeek(fracFrom(e.clientX))
+    const move = (e: PointerEvent) => onSeek(fracFrom(e.clientX))
     const up = () => setDragging(false)
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
     return () => {
-      window.removeEventListener('mousemove', move)
-      window.removeEventListener('mouseup', up)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
     }
   }, [dragging, onSeek])
 
@@ -107,10 +111,10 @@ export function Seekbar({
   return (
     <div
       ref={ref}
-      onMouseDown={onDown}
+      onPointerDown={onDown}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      className={`relative h-3 flex items-center cursor-pointer select-none ${className ?? ''}`}
+      className={`relative h-3 flex items-center cursor-pointer select-none touch-none ${className ?? ''}`}
     >
       <div className={`relative w-full h-1 rounded-full overflow-hidden ${c.track}`}>
         <div className={`absolute inset-y-0 left-0 ${c.buffer}`} style={{ width: buf }} />

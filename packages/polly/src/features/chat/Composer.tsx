@@ -20,6 +20,9 @@ import {
   type FilePickerCategory,
 } from '../files/upload.js'
 import { Attachments, type PendingAttachment } from './Attachments.js'
+import { VideoNoteOverlay } from './VideoNoteRecorder.js'
+import { VoiceRecorderBar } from './VoiceRecorder.js'
+import { useNoteRecorder } from './useNoteRecorder.js'
 
 const LazyEmojiPicker = React.lazy(() => import('./EmojiPicker.js'))
 const LazyGifPicker = React.lazy(() => import('../giphy/GifPicker.js'))
@@ -636,6 +639,26 @@ export function Composer({
   const hasReady = attachments.some((a) => a.status === 'ready')
   const sendDisabled = hasUploading || (!text.trim() && !hasReady)
 
+  // Записи с устройства: на мобиле пустой композер показывает кружок+микрофон
+  // вместо send. Готовая запись сразу загружается и уходит отдельным сообщением.
+  const voice = useNoteRecorder({
+    video: false,
+    onFinish: async ({ file, durationSec }) => {
+      const attachment = await uploadAttachment(file, { voice: true, durationSec })
+      onSend('', [attachment])
+    },
+    onError: setWarning,
+  })
+  const circle = useNoteRecorder({
+    video: true,
+    onFinish: async ({ file, durationSec }) => {
+      const attachment = await uploadAttachment(file, { circle: true, durationSec })
+      onSend('', [attachment])
+    },
+    onError: setWarning,
+  })
+  const showMic = isMobile && !text.trim() && attachments.length === 0
+
   return (
     <div
       className="px-4 pb-3.5 pt-2 shrink-0 relative"
@@ -678,6 +701,8 @@ export function Composer({
       {warning && (
         <div className="mb-1.5 text-[10px] text-kd-danger font-mono">{warning}</div>
       )}
+      {circle.status !== 'idle' && <VideoNoteOverlay recorder={circle} />}
+      {voice.status !== 'idle' ? <VoiceRecorderBar recorder={voice} /> : (
       <div className="bg-kd-panel rounded-kd border border-kd-border flex items-center gap-2.5 px-3 py-2 relative">
         {/* Всплывашка форматирования над полем — пока есть выделение.
             onMouseDown+preventDefault: клик не должен снимать выделение. */}
@@ -823,18 +848,40 @@ export function Composer({
             )}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={send}
-          disabled={sendDisabled}
-          title={hasUploading ? 'ждём загрузку…' : undefined}
-          className={isMobile
-            ? 'w-9 h-9 rounded-full bg-kd-accent text-white flex items-center justify-center hover:bg-kd-accent-deep transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0'
-            : 'inline-flex items-center justify-center gap-1 h-6 px-2.5 bg-kd-accent text-white text-[11px] font-semibold font-mono leading-none rounded hover:bg-kd-accent-deep transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0'}
-        >
-          {isMobile ? <Icon.Send size={17} /> : 'send ⏎'}
-        </button>
+        {showMic ? (
+          <>
+            <button
+              type="button"
+              onClick={() => void circle.start()}
+              title="записать кружок"
+              className="w-9 h-9 rounded-full border border-kd-border text-kd-text-soft hover:text-kd-text flex items-center justify-center transition-colors shrink-0"
+            >
+              <Icon.Video size={17} />
+            </button>
+            <button
+              type="button"
+              onClick={() => void voice.start()}
+              title="записать голосовое"
+              className="w-9 h-9 rounded-full bg-kd-accent text-white flex items-center justify-center hover:bg-kd-accent-deep transition-colors shrink-0"
+            >
+              <Icon.Mic size={17} />
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={send}
+            disabled={sendDisabled}
+            title={hasUploading ? 'ждём загрузку…' : undefined}
+            className={isMobile
+              ? 'w-9 h-9 rounded-full bg-kd-accent text-white flex items-center justify-center hover:bg-kd-accent-deep transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0'
+              : 'inline-flex items-center justify-center gap-1 h-6 px-2.5 bg-kd-accent text-white text-[11px] font-semibold font-mono leading-none rounded hover:bg-kd-accent-deep transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0'}
+          >
+            {isMobile ? <Icon.Send size={17} /> : 'send ⏎'}
+          </button>
+        )}
       </div>
+      )}
       <div className="mt-1.5 px-1 text-[10px] text-kd-text-mute flex items-center gap-2.5 empty:hidden">
         {channelId
           ? <TypingLine channelId={channelId} memberMap={memberMap} mobile={isMobile} />

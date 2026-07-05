@@ -68,6 +68,16 @@ export const AttachmentSchema = z.object({
   height: z.number().int().positive().nullable().optional(),
   /** Вложение помечено спойлером — клиент блюрит его до клика. */
   spoiler: z.boolean().default(false),
+  /** Голосовое сообщение (T-104): audio-вложение, записанное с микрофона.
+      Клиент рендерит компактный плеер вместо карточки аудиофайла. */
+  voice: z.boolean().default(false),
+  /** Кружок (T-105): video-вложение с фронталки, как в Telegram.
+      Клиент рендерит круглый inline-плеер вместо видео-тайла. */
+  circle: z.boolean().default(false),
+  /** Длительность в секундах, замеренная при записи. Нужна отдельно от
+      метаданных файла: webm из MediaRecorder не содержит duration
+      (в <audio>/<video> это Infinity до полной перемотки). */
+  durationSec: z.number().int().positive().nullable().optional(),
 })
 export type Attachment = z.infer<typeof AttachmentSchema>
 
@@ -433,11 +443,18 @@ export type AddFavoriteRequest = z.infer<typeof AddFavoriteRequestSchema>
 
 export const MemberPublicSchema = z.object({
   id: z.string().uuid(),
+  // ЭФФЕКТИВНОЕ имя: серверный ник (если задан) поверх глобального
+  // displayName. Клиент рендерит как есть — резолвить ничего не нужно.
   displayName: z.string().max(64),
   // Логин-ник (@username) — нужен для упоминаний `@ник`. Optional, чтобы
   // не ломать старые места, где участник собирается без него.
   username: z.string().optional(),
+  // ЭФФЕКТИВНЫЙ аватар: серверный (если задан) поверх глобального.
   avatarUrl: z.string().url().nullable(),
+  // Сырые override'ы серверного профиля — для UI редактирования и подписи
+  // «он же <глобальное имя>». null/absent = не переопределено.
+  nickname: z.string().max(64).nullable().optional(),
+  serverAvatarUrl: z.string().url().nullable().optional(),
   status: z.enum(['online', 'idle', 'dnd', 'offline']),
   customStatus: z.string().max(128).nullable().optional(),
   role: z.enum(['owner', 'admin', 'member']),
@@ -641,6 +658,24 @@ export const PatchMeRequestSchema = z.object({
 )
 export type PatchMeRequest = z.infer<typeof PatchMeRequestSchema>
 
+// ───── Серверный профиль (per-server ник и аватар, как в Discord) ─────
+
+// PATCH /api/servers/:serverId/members/me. null = сбросить к глобальному.
+export const PatchMemberProfileRequestSchema = z.object({
+  nickname:  z.string().trim().min(1).max(64).nullable().optional(),
+  avatarUrl: z.string().url().nullable().optional(),
+}).refine(
+  (v) => v.nickname !== undefined || v.avatarUrl !== undefined,
+  { message: 'nothing to update', path: ['nickname'] },
+)
+export type PatchMemberProfileRequest = z.infer<typeof PatchMemberProfileRequestSchema>
+
+export const MemberProfileResponseSchema = z.object({
+  nickname:  z.string().nullable(),
+  avatarUrl: z.string().url().nullable(),
+})
+export type MemberProfileResponse = z.infer<typeof MemberProfileResponseSchema>
+
 // ───── Search ─────
 
 export const SearchSortSchema = z.enum(['rank', 'recent'])
@@ -748,6 +783,24 @@ export const VoiceSelfStateRequestSchema = z.object({
 })
 export type VoiceSelfStateRequest = z.infer<typeof VoiceSelfStateRequestSchema>
 
+// Hover-превью демки (как в Discord): стример периодически заливает
+// маленький JPEG-кадр своего экрана, сервер держит его в Redis с коротким
+// TTL. Нужен тем, кто НЕ в комнате (живая LiveKit-подписка им недоступна).
+// dataBase64 — без `data:`-префикса. 384 КБ base64 ≈ 288 КБ JPEG — с запасом
+// для кадра 480px.
+export const VOICE_PREVIEW_MAX_BASE64 = 384 * 1024
+
+export const VoicePreviewUploadRequestSchema = z.object({
+  dataBase64: z.string().min(1).max(VOICE_PREVIEW_MAX_BASE64),
+})
+export type VoicePreviewUploadRequest = z.infer<typeof VoicePreviewUploadRequestSchema>
+
+export const VoicePreviewResponseSchema = z.object({
+  /** data:image/jpeg;base64,… или null, если превью (ещё) нет. */
+  dataUrl: z.string().nullable(),
+})
+export type VoicePreviewResponse = z.infer<typeof VoicePreviewResponseSchema>
+
 export const VoiceJoinResponseSchema = z.object({
   token: z.string(),
   url: z.string(),
@@ -776,6 +829,7 @@ export const PRESIGN_ALLOWED_CONTENT_TYPES = [
   'audio/wav',
   'audio/flac',
   'audio/mp4',
+  'audio/webm',
   'application/pdf',
   'text/plain',
   'application/zip',
@@ -790,6 +844,12 @@ export const PresignRequestSchema = z.object({
   contentType: z.enum(PRESIGN_ALLOWED_CONTENT_TYPES),
   size: z.number().int().positive().max(MAX_ATTACHMENT_SIZE),
   originalName: z.string().min(1).max(255).optional(),
+  /** Голосовое сообщение (T-104) — только для audio/*. */
+  voice: z.boolean().optional(),
+  /** Кружок (T-105) — только для video/*. */
+  circle: z.boolean().optional(),
+  /** Длительность записи в секундах (замер на клиенте, максимум час). */
+  durationSec: z.number().int().positive().max(3600).optional(),
 })
 export type PresignRequest = z.infer<typeof PresignRequestSchema>
 

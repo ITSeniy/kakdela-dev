@@ -129,6 +129,10 @@ export const serverMembers = pgTable(
     serverId: uuid('server_id').notNull().references(() => servers.id, { onDelete: 'cascade' }),
     userId:   uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     role:     memberRoleEnum('role').notNull().default('member'),
+    // Серверный профиль (как в Discord): per-server ник и аватар поверх
+    // глобальных. null = используется глобальное значение из users.
+    nickname:  text('nickname'),
+    avatarUrl: text('avatar_url'),
     joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -277,6 +281,13 @@ export const files = pgTable(
     status:       fileStatusEnum('status').notNull().default('pending'),
     // Спойлер: вложение скрыто блюром до клика (помечается при отправке).
     spoiler:      boolean('spoiler').notNull().default(false),
+    // Голосовое сообщение (T-104): клиент рендерит компактный плеер.
+    voice:        boolean('voice').notNull().default(false),
+    // Кружок (T-105): видео с фронталки, круглый inline-плеер.
+    circle:       boolean('circle').notNull().default(false),
+    // Длительность записи в секундах — замер клиента (webm из MediaRecorder
+    // не содержит duration в метаданных).
+    durationSec:  integer('duration_sec'),
     createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

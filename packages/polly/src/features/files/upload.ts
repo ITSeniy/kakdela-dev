@@ -65,6 +65,7 @@ const MIME_BY_EXT: Record<string, string> = {
   wav:  'audio/wav',
   flac: 'audio/flac',
   m4a:  'audio/mp4',
+  weba: 'audio/webm',
   mp4:  'video/mp4',
   webm: 'video/webm',
   mov:  'video/quicktime',
@@ -114,6 +115,7 @@ const PICKER_CATEGORIES: FilePickerCategory[] = [
       'audio/wav':  ['.wav'],
       'audio/flac': ['.flac'],
       'audio/mp4':  ['.m4a'],
+      'audio/webm': ['.weba'],
     },
   },
   {
@@ -157,6 +159,12 @@ function detectMime(file: File): string {
 export interface UploadOptions {
   onProgress?: (pct: number) => void
   signal?: AbortSignal
+  /** Записи с устройства: флаги + длительность уезжают в presign и
+      возвращаются в Attachment — клиенты рендерят особый плеер.
+      voice — голосовое (T-104), circle — кружок (T-105). */
+  voice?: boolean
+  circle?: boolean
+  durationSec?: number
 }
 
 async function putWithProgress(
@@ -221,6 +229,9 @@ export async function uploadAttachment(
         contentType,
         size: file.size,
         originalName: file.name.slice(0, 255),
+        ...(opts.voice ? { voice: true } : {}),
+        ...(opts.circle ? { circle: true } : {}),
+        ...(opts.durationSec ? { durationSec: opts.durationSec } : {}),
       }),
     })
   } catch (err) {

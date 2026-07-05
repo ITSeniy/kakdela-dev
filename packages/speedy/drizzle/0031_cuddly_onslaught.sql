@@ -1,0 +1,1 @@
+ALTER TABLE "files" ADD COLUMN "circle" boolean DEFAULT false NOT NULL;

@@ -36,6 +36,8 @@ export function GifEmbed({ gif }: { gif: GifEmbedData }) {
     width: gif.width,
     height: gif.height,
     spoiler: false,
+    voice: false,
+    circle: false,
   }
 
   return (

@@ -79,6 +79,9 @@ export function toAttachment(row: {
   width: number | null
   height: number | null
   spoiler?: boolean
+  voice?: boolean
+  circle?: boolean
+  durationSec?: number | null
 }): Attachment {
   return {
     id:           row.id,
@@ -91,6 +94,9 @@ export function toAttachment(row: {
     width:        row.width,
     height:       row.height,
     spoiler:      row.spoiler ?? false,
+    voice:        row.voice ?? false,
+    circle:       row.circle ?? false,
+    durationSec:  row.durationSec ?? null,
   }
 }
 
@@ -216,12 +222,18 @@ export const filesRoutes: FastifyPluginAsyncZod = async (app) => {
       },
     },
     async (req, reply) => {
-      const { contentType, size, originalName } = req.body
+      const { contentType, size, originalName, voice, circle, durationSec } = req.body
       const userId = req.authUser!.id
 
       const ext = EXTENSION_FOR_TYPE[contentType as AllowedMimeType] ?? 'bin'
       const fileId = uuidv7()
       const key = `public/${userId}/${fileId}.${ext}`
+
+      // Флаги записей привязаны к типу медиа: «голосовое» — только аудио,
+      // «кружок» — только видео. На прочих типах молча игнорируем, чтобы
+      // нельзя было навязать неподходящий рендер.
+      const isVoice = (voice ?? false) && contentType.startsWith('audio/')
+      const isCircle = (circle ?? false) && contentType.startsWith('video/')
 
       await db.insert(files).values({
         id:           fileId,
@@ -231,6 +243,9 @@ export const filesRoutes: FastifyPluginAsyncZod = async (app) => {
         contentType,
         sizeBytes:    size,
         status:       'pending',
+        voice:        isVoice,
+        circle:       isCircle,
+        durationSec:  isVoice || isCircle ? (durationSec ?? null) : null,
       })
 
       const command = new PutObjectCommand({

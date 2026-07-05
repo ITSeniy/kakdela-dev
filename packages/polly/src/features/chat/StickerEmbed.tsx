@@ -33,6 +33,8 @@ export function StickerEmbed({ sticker }: { sticker: StickerRef }) {
     width: sticker.width,
     height: sticker.height,
     spoiler: false,
+    voice: false,
+    circle: false,
   }
 
   return (

@@ -13,6 +13,7 @@ export const ALLOWED_MIME_TYPES = [
   'audio/wav',
   'audio/flac',
   'audio/mp4',
+  'audio/webm',
   'application/pdf',
   'text/plain',
   'application/zip',
@@ -44,6 +45,7 @@ export const EXTENSION_FOR_TYPE: Record<AllowedMimeType, string> = {
   'audio/wav':        'wav',
   'audio/flac':       'flac',
   'audio/mp4':        'm4a',
+  'audio/webm':       'weba',
   'application/pdf':  'pdf',
   'text/plain':       'txt',
   'application/zip':  'zip',
@@ -58,6 +60,7 @@ const MAGIC_DETECTABLE: ReadonlySet<AllowedMimeType> = new Set<AllowedMimeType>(
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
   'video/mp4', 'video/webm', 'video/quicktime',
   'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/flac', 'audio/mp4',
+  'audio/webm',
   'application/pdf',
   'application/zip', 'application/x-7z-compressed',
   'application/x-rar-compressed', 'application/gzip',
@@ -109,6 +112,13 @@ export async function checkMagicBytes(
   }
 
   const detectedMime = DETECTED_MIME_ALIASES[detected.mime] ?? detected.mime
+
+  // file-type различает webm только по контейнеру (EBML) и всегда отдаёт
+  // video/webm — audio-only webm из MediaRecorder (голосовые, T-104) с точки
+  // зрения magic bytes неотличим, поэтому допускаем его под audio/webm.
+  if (declared === 'audio/webm' && detectedMime === 'video/webm') {
+    return { ok: true, detectedMime: declared }
+  }
 
   if (detectedMime !== declared) {
     return { ok: false, reason: 'mismatch', detectedMime }

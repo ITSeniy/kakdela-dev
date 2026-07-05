@@ -7,6 +7,8 @@ import { openExternal } from '../../lib/host/shell.js'
 import { useFavorites } from '../favorites/api.js'
 import { Lightbox, type LightboxContext } from './Lightbox.js'
 import { AudioPlayer } from './media/AudioPlayer.js'
+import { VideoCircle } from './media/VideoCircle.js'
+import { VoiceMessage } from './media/VoiceMessage.js'
 import { formatBytes } from './formatBytes.js'
 
 interface AttachmentListProps {
@@ -190,8 +192,9 @@ export function AttachmentList({ attachments, lightboxContext, blur = false }: A
   const [revealed, setRevealed] = useState(false)
   if (attachments.length === 0) return null
 
-  // В лайтбокс идут и фото, и видео — единая лента просмотра.
-  const media = attachments.filter((a) => a.kind === 'image' || a.kind === 'video')
+  // В лайтбокс идут и фото, и видео — единая лента просмотра. Кружки (T-105)
+  // не входят: они играют inline круглым плеером.
+  const media = attachments.filter((a) => (a.kind === 'image' || a.kind === 'video') && !a.circle)
 
   function openMedia(att: Attachment) {
     const idx = media.findIndex((a) => a.id === att.id)
@@ -205,9 +208,11 @@ export function AttachmentList({ attachments, lightboxContext, blur = false }: A
           ? <GifFavStar attachment={att}><ImageThumb attachment={att} onOpen={() => openMedia(att)} /></GifFavStar>
           : <ImageThumb attachment={att} onOpen={() => openMedia(att)} />
       case 'video':
-        return <VideoThumb attachment={att} onOpen={() => openMedia(att)} />
+        return att.circle
+          ? <VideoCircle attachment={att} />
+          : <VideoThumb attachment={att} onOpen={() => openMedia(att)} />
       case 'audio':
-        return <AudioPlayer attachment={att} />
+        return att.voice ? <VoiceMessage attachment={att} /> : <AudioPlayer attachment={att} />
       default:
         return <FileCard attachment={att} />
     }
