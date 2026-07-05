@@ -1,6 +1,6 @@
 {
   "name": "@kakdela/polly",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Desktop client (Tauri 2). Polly Esther — следит за внешним видом.",
   "type": "module",

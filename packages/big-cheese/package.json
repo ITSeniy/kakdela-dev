@@ -1,6 +1,6 @@
 {
   "name": "@kakdela/big-cheese",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Админский CLI для прод-операций. The Big Cheese — у него вся власть.",
   "type": "module",

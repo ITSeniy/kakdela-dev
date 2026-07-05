@@ -1,6 +1,6 @@
 {
   "name": "@kakdela/francine",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Миграции, сидинг, инвайт-коды. Francine Manx — держит документы в порядке.",
   "type": "module",

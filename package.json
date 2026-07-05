@@ -1,6 +1,6 @@
 {
   "name": "pizza-parlor",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "КакДела — самохостящийся уютный чат на 15-20 друзей. Кодовая тема: Samurai Pizza Cats.",
   "packageManager": "pnpm@9.12.0",
