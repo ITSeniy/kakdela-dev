@@ -1,6 +1,6 @@
 import type { User } from '@kakdela/ginzu'
 
-import { ApiError, apiFetch } from '../../lib/api.js'
+import { ApiError, apiFetch, refreshSession } from '../../lib/api.js'
 import { secrets } from '../../lib/host/secrets.js'
 import { SPEEDY_URL } from '../../lib/serverUrl.js'
 import { useAuthStore } from './store.js'
@@ -75,8 +75,7 @@ export async function initAuth(): Promise<void> {
   useAuthStore.getState().setStatus('loading')
 
   // 1) Оптимистично поднимаем сессию из защищённого стора — мгновенный холодный
-  //    старт без ожидания сети. Токен мог истечь; refresh ниже его валидирует и
-  //    ротирует, а случайные 401 перехватит singleflight-refresh в lib/api.
+  //    старт без ожидания сети.
   let restored = false
   try {
     const raw = await secrets.get(SESSION_KEY)
@@ -87,23 +86,41 @@ export async function initAuth(): Promise<void> {
     }
   } catch { /* битый стор — игнорируем, пойдём через refresh */ }
 
-  // 2) Валидируем/ротируем через httpOnly refresh-cookie.
-  try {
-    const res = await fetch(`${SPEEDY_URL}/api/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-    })
-    if (!res.ok) {
-      // Сервер отверг (cookie истёк/отозван) — честный логаут.
-      await clearSession()
-      return
+  if (restored) {
+    // 2а) Валидируем сессию через GET /auth/me — БЕЗ ротации refresh-токена.
+    //     Если access истёк, apiFetch сам обновит его через singleflight.
+    //     Раньше здесь был прямой POST /auth/refresh: он гонялся с 401-refresh'ами
+    //     первых запросов приложения, сервер ротирует токен атомарно — проигравший
+    //     получал session-revoked, и клиент случайно разлогинивался на старте.
+    try {
+      const me = await apiFetch<User>('/api/auth/me')
+      const token = useAuthStore.getState().accessToken
+      if (token) {
+        useAuthStore.getState().setSession(me, token)
+        await persistSession(me, token)
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        // Настоящий отказ (cookie истёк/отозван) — честный логаут.
+        // Сеть/5xx логаутом не считаем: оставляем локальную сессию (офлайн).
+        await clearSession()
+      }
     }
-    const json = await res.json() as { accessToken: string; user: User }
-    await persistSession(json.user, json.accessToken)
-    useAuthStore.getState().setSession(json.user, json.accessToken)
+    return
+  }
+
+  // 2б) Локальной сессии нет — единственный путь через refresh-cookie,
+  //     тем же singleflight'ом, что и остальные обновления.
+  try {
+    const token = await refreshSession()
+    const user = useAuthStore.getState().user
+    if (token && user) {
+      await persistSession(user, token)
+    } else {
+      useAuthStore.getState().clear()
+    }
   } catch {
-    // Сеть моргнула. Если успели восстановить сессию из стора — оставляем её
-    // (офлайн-устойчивость на мобиле); иначе — unauthed.
-    if (!restored) useAuthStore.getState().clear()
+    // Сеть моргнула, восстанавливать нечего — unauthed.
+    useAuthStore.getState().clear()
   }
 }

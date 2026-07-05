@@ -52,6 +52,17 @@ function tryRefresh(): Promise<string | null> {
   return refreshPromise
 }
 
+/**
+ * Единственная легальная точка ручного обновления сессии по refresh-cookie.
+ * Идёт через тот же singleflight, что и 401-и внутри apiFetch: прямой fetch
+ * /auth/refresh в обход него устраивает гонку двух ротаций (сервер атомарно
+ * удаляет старую сессию — второй запрос получает session-revoked и разлогин).
+ * null = сервер отверг cookie (истёк/отозван); сеть/5xx — бросает ApiError.
+ */
+export function refreshSession(): Promise<string | null> {
+  return tryRefresh()
+}
+
 async function doRequest(path: string, token: string | null, init?: RequestInit): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
