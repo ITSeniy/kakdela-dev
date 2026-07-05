@@ -1,6 +1,6 @@
 // Мобильные настройки. Стиль 1:1 с designs/final-mobile.jsx (MobileSettings):
 // топ-бар + секции-карточки (аккаунт / уведомления / безопасность / о приложении),
-// быстрый тумблер тёмной темы, опасный «сбросить устройство».
+// быстрый тумблер тёмной темы.
 //
 // Подстраницы (профиль/внешний вид/уведомления/голос/звуки) переиспользуют те же
 // компоненты, что и десктопный SettingsScreen — отдельной логики не вводим, на
@@ -9,9 +9,7 @@
 
 import { useLocation } from 'wouter'
 
-import { confirmDialog } from '../../components/ConfirmDialog.js'
 import { Icon } from '../../components/Icon.js'
-import { toast } from '../../components/toast/index.js'
 import { effectiveTheme, useThemeStore } from '../../lib/theme.js'
 import { AppearanceSettings } from './AppearanceSettings.js'
 import { NotificationSettings } from './NotificationSettings.js'
@@ -98,16 +96,6 @@ export function MobileSettingsScreen({ page }: { page?: string }) {
     )
   }
 
-  async function resetDevice() {
-    const ok = await confirmDialog({
-      title: 'сбросить устройство?',
-      body: 'все секретные переписки и ключи на этом устройстве будут стёрты без возможности восстановления.',
-      confirmLabel: 'сбросить',
-      danger: true,
-    })
-    if (ok) toast.info('сброс устройства — скоро')
-  }
-
   return (
     <>
       <TopBar
@@ -130,7 +118,6 @@ export function MobileSettingsScreen({ page }: { page?: string }) {
         <Section title="— безопасность">
           <Row first icon={<Icon.Lock size={18} />} label="управление ключами" right={Chevron} onClick={() => navigate('/secret')} />
           <Row icon={<Icon.ShieldCheck size={18} />} label="мои safety numbers" right={Chevron} onClick={() => navigate('/secret')} />
-          <Row icon={<Icon.Alert size={18} />} label="сбросить устройство" danger onClick={resetDevice} />
         </Section>
 
         <Section title="— о приложении">
