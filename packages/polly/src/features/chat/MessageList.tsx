@@ -64,8 +64,20 @@ function UnreadDivider() {
   )
 }
 
-// Системная строка по центру (вступление участника) — приглушённая, не «пузырь».
+// Системная строка по центру (вступление участника, день рождения) —
+// приглушённая, не «пузырь».
 function SystemLine({ message, name }: { message: IMessage; name: string }) {
+  if (message.system?.kind === 'birthday') {
+    return (
+      <div className="px-4 py-1.5 flex items-center justify-center gap-1.5 text-[11px] select-none">
+        <span>🎂</span>
+        <span className="text-kd-text-soft">
+          сегодня день рождения у <span className="font-semibold text-kd-text">{name}</span> — поздравьте!
+        </span>
+        <span>🎉</span>
+      </div>
+    )
+  }
   const suffix = message.system?.kind === 'join' ? 'присоединился к серверу' : message.content
   return (
     <div className="px-4 py-1 flex items-center justify-center gap-1.5 text-[11px] text-kd-text-mute select-none">

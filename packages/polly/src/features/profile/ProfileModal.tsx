@@ -20,7 +20,7 @@ import { listMembers } from '../servers/api.js'
 import { useSettingsUi } from '../settings/store.js'
 import { StartSecretChat } from '../secret/StartSecretChat.js'
 import { getUserProfile } from './api.js'
-import { fmtJoined, fmtTzNow } from './format.js'
+import { fmtBirthday, fmtJoined, fmtTzNow, isBirthdayToday } from './format.js'
 import { useProfileUi } from './store.js'
 
 // Позиция участника в иерархии ролей (зеркало lib/permissions.ts на сервере):
@@ -154,6 +154,14 @@ function ReadView({ profile }: { profile: UserProfile }) {
             <div className="text-[11px] font-mono text-kd-text-mute">часовой пояс</div>
             <div className="text-[12px] font-semibold text-kd-text truncate" title={profile.timezone ?? undefined}>
               {tzNow}
+            </div>
+          </div>
+        )}
+        {profile.birthday && fmtBirthday(profile.birthday) && (
+          <div className="flex-1 min-w-0 px-2.5 py-2 rounded-kd bg-kd-panel-alt border border-kd-border">
+            <div className="text-[11px] font-mono text-kd-text-mute">день рождения</div>
+            <div className="text-[12px] font-semibold text-kd-text truncate">
+              {isBirthdayToday(profile.birthday) ? '🎂 сегодня!' : `🎂 ${fmtBirthday(profile.birthday)}`}
             </div>
           </div>
         )}

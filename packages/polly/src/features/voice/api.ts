@@ -32,6 +32,11 @@ export async function declineDmCall(channelId: string): Promise<void> {
   await apiFetch<void>(`/api/voice/dm/${channelId}/decline`, { method: 'POST' })
 }
 
+/** Позвать участника сервера в голосовой канал («го в дс»). */
+export async function ringUser(channelId: string, userId: string): Promise<void> {
+  await apiFetch<void>(`/api/voice/${channelId}/ring/${userId}`, { method: 'POST' })
+}
+
 export async function listVoiceParticipants(
   channelId: string,
 ): Promise<VoiceParticipantsResponse> {

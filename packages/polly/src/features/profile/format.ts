@@ -11,6 +11,26 @@ export function fmtJoined(iso: string): string {
   return `${season} ${d.getFullYear()}`
 }
 
+const MONTHS_GEN = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+]
+
+/** «7 июля» из «MM-DD»; null при кривом значении. */
+export function fmtBirthday(mmdd: string): string | null {
+  const [mm, dd] = mmdd.split('-').map(Number)
+  if (!mm || !dd || mm > 12) return null
+  return `${dd} ${MONTHS_GEN[mm - 1]}`
+}
+
+/** Сегодня ли день рождения (сравнение в локальной таймзоне смотрящего). */
+export function isBirthdayToday(mmdd: string | null | undefined): boolean {
+  if (!mmdd) return false
+  const now = new Date()
+  const today = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  return mmdd === today
+}
+
 /** «МСК · 11:24» — короткое имя пояса + текущее время там. */
 export function fmtTzNow(tz: string): string | null {
   try {

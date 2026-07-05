@@ -131,6 +131,8 @@ export type LinkPreview = z.infer<typeof LinkPreviewSchema>
 export const SystemEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('call'), durationSec: z.number().int().nonnegative() }),
   z.object({ kind: z.literal('join') }),
+  // День рождения автора сообщения — строка «🎂 сегодня день рождения у X».
+  z.object({ kind: z.literal('birthday') }),
 ])
 export type SystemEvent = z.infer<typeof SystemEventSchema>
 
@@ -159,6 +161,67 @@ export const StickerRefSchema = z.object({
 })
 export type StickerRef = z.infer<typeof StickerRefSchema>
 
+// ───── Polls (опросы) ─────
+
+// Статическая часть опроса — хранится в messages.poll (jsonb): вопрос и
+// варианты. Голоса живут отдельной таблицей poll_votes (один голос на юзера,
+// повторный голос переносит выбор, клик по своему варианту — снимает голос).
+export const PollDefinitionSchema = z.object({
+  question: z.string().min(1).max(300),
+  options:  z.array(z.string().min(1).max(100)).min(2).max(8),
+})
+export type PollDefinition = z.infer<typeof PollDefinitionSchema>
+
+// Опрос в DTO сообщения: определение + живые счётчики + мой голос.
+export const PollViewSchema = z.object({
+  question: z.string(),
+  options: z.array(z.object({
+    text:  z.string(),
+    votes: z.number().int().nonnegative(),
+  })),
+  /** Индекс варианта, за который голосовал текущий юзер; null — не голосовал. */
+  myVote:     z.number().int().nullable(),
+  totalVotes: z.number().int().nonnegative(),
+})
+export type PollView = z.infer<typeof PollViewSchema>
+
+export const PollVoteRequestSchema = z.object({
+  option: z.number().int().min(0).max(7),
+})
+export type PollVoteRequest = z.infer<typeof PollVoteRequestSchema>
+
+// ───── Events (встречи) ─────
+
+// Статическая часть встречи — в messages.event (jsonb). RSVP — отдельной
+// таблицей event_rsvps («пойду»/«не пойду», один ответ на юзера).
+export const EventDefinitionSchema = z.object({
+  title:    z.string().min(1).max(200),
+  /** ISO-момент начала. */
+  startsAt: z.string().datetime({ offset: true }),
+  place:    z.string().max(200).nullable(),
+})
+export type EventDefinition = z.infer<typeof EventDefinitionSchema>
+
+export const EventRsvpSchema = z.enum(['going', 'declined'])
+export type EventRsvp = z.infer<typeof EventRsvpSchema>
+
+// Встреча в DTO сообщения: определение + списки идущих/отказавшихся + мой ответ.
+export const EventViewSchema = z.object({
+  title:    z.string(),
+  startsAt: z.string(),
+  place:    z.string().nullable(),
+  going:    z.array(z.string().uuid()),
+  declined: z.array(z.string().uuid()),
+  myRsvp:   EventRsvpSchema.nullable(),
+})
+export type EventView = z.infer<typeof EventViewSchema>
+
+export const EventRsvpRequestSchema = z.object({
+  /** null = снять свой ответ. */
+  rsvp: EventRsvpSchema.nullable(),
+})
+export type EventRsvpRequest = z.infer<typeof EventRsvpRequestSchema>
+
 export const MessageSchema = z.object({
   id: z.string().uuid(),
   channelId: z.string().uuid(),
@@ -184,6 +247,10 @@ export const MessageSchema = z.object({
   gif: GifEmbedSchema.nullable().optional(),
   /** Стикер сервера (снимок); null — обычное сообщение. */
   sticker: StickerRefSchema.nullable().optional(),
+  /** Опрос (определение + счётчики + мой голос); null — обычное сообщение. */
+  poll: PollViewSchema.nullable().optional(),
+  /** Встреча (определение + RSVP + мой ответ); null — обычное сообщение. */
+  event: EventViewSchema.nullable().optional(),
 })
 export type Message = z.infer<typeof MessageSchema>
 
@@ -320,9 +387,13 @@ export const SendMessageRequestSchema = z.object({
   gif: GifEmbedSchema.optional(),
   /** Стикер (отправка из пикера/избранного). */
   sticker: StickerRefSchema.optional(),
+  /** Опрос: вопрос + варианты (сообщение-опрос может быть без текста). */
+  poll: PollDefinitionSchema.optional(),
+  /** Встреча: заголовок + время + место (сообщение может быть без текста). */
+  event: EventDefinitionSchema.optional(),
 }).refine(
-  (v) => v.content.trim().length > 0 || (v.attachments && v.attachments.length > 0) || v.gif !== undefined || v.sticker !== undefined,
-  { message: 'message must have content, attachments, a gif or a sticker', path: ['content'] },
+  (v) => v.content.trim().length > 0 || (v.attachments && v.attachments.length > 0) || v.gif !== undefined || v.sticker !== undefined || v.poll !== undefined || v.event !== undefined,
+  { message: 'message must have content, attachments, a gif, a sticker, a poll or an event', path: ['content'] },
 )
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
@@ -457,6 +528,8 @@ export const MemberPublicSchema = z.object({
   serverAvatarUrl: z.string().url().nullable().optional(),
   status: z.enum(['online', 'idle', 'dnd', 'offline']),
   customStatus: z.string().max(128).nullable().optional(),
+  /** День рождения «MM-DD» — для 🎂 в списке участников. */
+  birthday: z.string().nullable().optional(),
   role: z.enum(['owner', 'admin', 'member']),
   // Назначенные кастомные роли (без @everyone), от старшей к младшей.
   roles: z.array(RoleRefSchema).default([]),
@@ -594,6 +667,9 @@ export const DmSummarySchema = z.object({
   otherUser:   MemberPublicSchema.omit({ role: true }),
   lastMessage: DmLastMessagePreviewSchema.nullable(),
   unreadCount: z.number().int().nonnegative(),
+  /** Последнее сообщение, прочитанное СОБЕСЕДНИКОМ (его lastRead-курсор).
+      Мои сообщения с id <= этого — «прочитаны» (галочки ✓✓). */
+  peerLastReadMessageId: z.string().uuid().nullable(),
 })
 export type DmSummary = z.infer<typeof DmSummarySchema>
 
@@ -634,6 +710,8 @@ export const UserProfileSchema = z.object({
   status:       z.enum(['online', 'idle', 'dnd', 'offline']),
   about:        z.string().max(512).nullable(),
   timezone:     z.string().max(64).nullable(),
+  /** День рождения «MM-DD» (без года — возраст не палим). */
+  birthday:     z.string().regex(/^\d{2}-\d{2}$/).nullable(),
   bannerUrl:    z.string().url().nullable(),
   createdAt:    z.string(),
   sharedServers: z.array(SharedServerSchema),
@@ -649,6 +727,8 @@ export const PatchMeRequestSchema = z.object({
   avatarUrl:       z.string().url().nullable().optional(),
   about:           z.string().max(512).nullable().optional(),
   timezone:        z.string().max(64).nullable().optional(),
+  /** «MM-DD»; валидность дня в месяце проверяет сервер. null = убрать. */
+  birthday:        z.string().regex(/^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/).nullable().optional(),
   bannerUrl:       z.string().url().nullable().optional(),
   currentPassword: z.string().min(1).max(200).optional(),
   newPassword:     z.string().min(6).max(200).optional(),

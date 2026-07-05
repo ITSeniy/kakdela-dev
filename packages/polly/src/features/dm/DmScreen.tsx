@@ -26,6 +26,7 @@ import { Composer } from '../chat/Composer.js'
 import { useMessages } from '../chat/useMessages.js'
 import type { PendingMessage } from '../chat/types.js'
 import { DmCallScreen } from '../voice/DmCallScreen.js'
+import { useCamera } from '../voice/useCamera.js'
 import { useScreenShare } from '../voice/useScreenShare.js'
 import { useVoiceRoom, type DmCallPeer } from '../voice/useVoiceRoom.js'
 import { useVoiceStore } from '../voice/store.js'
@@ -148,12 +149,15 @@ function InviteToDmButton({ onSendInvite }: { onSendInvite: (url: string) => voi
 }
 
 function Header({
-  summary, onOpenProfile, onBack, onCall, onScreen, peerTyping, callDisabled, inviteAction,
+  summary, selfNotes, onOpenProfile, onBack, onCall, onVideo, onScreen, peerTyping, callDisabled, inviteAction,
 }: {
   summary: DmSummary | undefined
+  /** «Заметки себе»: без статуса, звонков и «печатает…». */
+  selfNotes: boolean
   onOpenProfile: (id: string) => void
   onBack?: () => void
   onCall: () => void
+  onVideo: () => void
   onScreen: () => void
   peerTyping: boolean
   callDisabled: boolean
@@ -201,23 +205,35 @@ function Header({
         title="открыть профиль"
         className="flex items-center gap-3 flex-1 min-w-0 text-left hover:opacity-80 transition-opacity"
       >
-        <Avatar
-          name={summary.otherUser.displayName}
-          avatarUrl={summary.otherUser.avatarUrl}
-          size={mobile ? 38 : 30}
-          status={status}
-        />
+        {selfNotes ? (
+          <span className="w-[30px] h-[30px] rounded-full bg-kd-accent/15 border border-kd-accent/40 flex items-center justify-center shrink-0">
+            <Icon.Bookmark size={15} className="text-kd-accent" />
+          </span>
+        ) : (
+          <Avatar
+            name={summary.otherUser.displayName}
+            avatarUrl={summary.otherUser.avatarUrl}
+            size={mobile ? 38 : 30}
+            status={status}
+          />
+        )}
         <div className="min-w-0">
           <div className="text-[13px] font-bold text-kd-text truncate">
-            {summary.otherUser.displayName}
+            {selfNotes ? 'заметки себе' : summary.otherUser.displayName}
           </div>
-          <div className={`text-[10px] font-mono truncate ${statusColor}`}>
-            ● {statusBase}{peerTyping && ' · печатает…'}
-          </div>
+          {selfNotes ? (
+            <div className="text-[10px] font-mono truncate text-kd-text-mute">
+              видно только вам · синк между устройствами
+            </div>
+          ) : (
+            <div className={`text-[10px] font-mono truncate ${statusColor}`}>
+              ● {statusBase}{peerTyping && ' · печатает…'}
+            </div>
+          )}
         </div>
       </button>
 
-      {mobile ? (
+      {selfNotes ? null : mobile ? (
         <>
           <button
             type="button"
@@ -230,9 +246,10 @@ function Header({
           </button>
           <button
             type="button"
-            onClick={() => toast.info('видеозвонок в личке — скоро')}
-            title="видеозвонок"
-            className="shrink-0 text-kd-text-soft active:text-kd-text"
+            onClick={onVideo}
+            disabled={callDisabled}
+            title={callTitle ?? 'видеозвонок'}
+            className={`shrink-0 ${callDisabled ? 'text-kd-text-mute opacity-50' : 'text-kd-text-soft active:text-kd-text'}`}
           >
             <Icon.Video size={20} />
           </button>
@@ -257,7 +274,9 @@ function Header({
           <HeaderAction
             icon={<Icon.Video size={12} />}
             label="видео"
-            onClick={() => toast.info('видеозвонок в личке — скоро')}
+            onClick={onVideo}
+            disabled={callDisabled}
+            title={callTitle}
           />
           <HeaderAction
             icon={<Icon.Monitor size={12} />}
@@ -287,6 +306,7 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
   const openProfile = useProfileUi((s) => s.open)
   const { joinDm } = useVoiceRoom()
   const { startShare } = useScreenShare()
+  const { startCamera } = useCamera()
 
   // Активный DM-звонок именно в этом канале (T-087). callMinimized — звонок
   // свёрнут, показываем чат с баннером «вернуться».
@@ -304,6 +324,9 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
   const [pending, setPending] = useState<PendingMessage[]>([])
   const [replyTo, setReplyTo] = useState<Message | null>(null)
   const [peerTyping, setPeerTyping] = useState(false)
+  // Live-курсор чтения собеседника (WS dm.read); базовое значение приходит
+  // с dm-list (peerLastReadMessageId). Берём максимум из двух (uuidv7 растёт).
+  const [peerReadLive, setPeerReadLive] = useState<string | null>(null)
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const { data: dms = [] } = useQuery({
@@ -344,10 +367,37 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
     }
   }, [channelId, user?.id])
 
+  // Галочки ✓✓: собеседник продвинул курсор чтения — обновляем live-значение.
+  useEffect(() => {
+    setPeerReadLive(null)
+    return wsClient.on((event) => {
+      if (event.t !== 'dm.read' || event.channelId !== channelId) return
+      if (event.userId === user?.id) return
+      setPeerReadLive((prev) => (prev !== null && prev > event.messageId ? prev : event.messageId))
+    })
+  }, [channelId, user?.id])
+
+  // «Заметки себе»: собеседник — я сам; статусы, звонки и галочки не нужны.
+  const selfNotes = summary !== undefined && summary.otherUser.id === user?.id
+
+  const peerReadBase = summary?.peerLastReadMessageId ?? null
+  const peerReadUpTo = selfNotes
+    ? null
+    : peerReadLive !== null && (peerReadBase === null || peerReadLive > peerReadBase)
+      ? peerReadLive
+      : peerReadBase
+
   async function handleCall() {
     if (!callPeer) return
     setCallMinimized(false)
     await joinDm(channelId, callPeer)
+  }
+
+  async function handleVideo() {
+    if (!callPeer) return
+    setCallMinimized(false)
+    await joinDm(channelId, callPeer)
+    await startCamera()
   }
 
   async function handleScreen() {
@@ -546,9 +596,11 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
     <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-kd-bg">
       <Header
         summary={summary}
+        selfNotes={selfNotes}
         onOpenProfile={openProfile}
         onBack={onBack}
         onCall={handleCall}
+        onVideo={handleVideo}
         onScreen={handleScreen}
         peerTyping={peerTyping}
         callDisabled={callDisabled}
@@ -570,6 +622,7 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
         memberMap={memberMap}
         channelMap={emptyChannelMap}
         otherUser={summary?.otherUser}
+        peerReadUpTo={peerReadUpTo}
         pending={pending}
         onMention={openProfile}
         onEdit={handleEdit}

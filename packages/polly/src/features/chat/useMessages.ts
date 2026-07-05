@@ -4,6 +4,7 @@ import { type InfiniteData, useInfiniteQuery, useQueryClient } from '@tanstack/r
 import type { MessagesPage } from '@kakdela/ginzu/api-types'
 
 import { wsClient } from '../../lib/ws.js'
+import { useAuthStore } from '../auth/store.js'
 import { listMessages } from './api.js'
 
 const PAGE_SIZE = 50
@@ -12,6 +13,7 @@ type Cache = InfiniteData<MessagesPage, string | undefined>
 
 export function useMessages(channelId: string | null) {
   const queryClient = useQueryClient()
+  const selfId = useAuthStore((s) => s.user?.id ?? null)
 
   const query = useInfiniteQuery({
     queryKey: ['messages', channelId],
@@ -140,6 +142,54 @@ export function useMessages(channelId: string | null) {
         })
         return
       }
+      // Голос в опросе: заменяем счётчики свежими (полный пересчёт сервера),
+      // myVote патчим только для собственных голосов (другие устройства).
+      if (event.t === 'poll.vote' && event.channelId === channelId) {
+        queryClient.setQueryData<Cache>(['messages', channelId], (old) => {
+          if (!old) return old
+          const pages = old.pages.map((page) => ({
+            ...page,
+            messages: page.messages.map((m) => {
+              if (m.id !== event.messageId || !m.poll) return m
+              const options = m.poll.options.map((o, i) => ({ ...o, votes: event.votes[i] ?? 0 }))
+              return {
+                ...m,
+                poll: {
+                  ...m.poll,
+                  options,
+                  totalVotes: event.votes.reduce((sum, v) => sum + v, 0),
+                  myVote: event.voterId === selfId ? event.option : m.poll.myVote,
+                },
+              }
+            }),
+          }))
+          return { ...old, pages }
+        })
+        return
+      }
+      // RSVP на встрече: заменяем списки свежими; myRsvp — только свой.
+      if (event.t === 'event.rsvp' && event.channelId === channelId) {
+        queryClient.setQueryData<Cache>(['messages', channelId], (old) => {
+          if (!old) return old
+          const pages = old.pages.map((page) => ({
+            ...page,
+            messages: page.messages.map((m) => {
+              if (m.id !== event.messageId || !m.event) return m
+              return {
+                ...m,
+                event: {
+                  ...m.event,
+                  going: event.going,
+                  declined: event.declined,
+                  myRsvp: event.voterId === selfId ? event.rsvp : m.event.myRsvp,
+                },
+              }
+            }),
+          }))
+          return { ...old, pages }
+        })
+        return
+      }
       // Тред создан/архивирован на сообщении в этом канале — рефетчим, чтобы
       // у parent message обновился бейдж «N сообщений».
       if (event.t === 'thread.new' && event.parentChannelId === channelId) {
@@ -150,7 +200,7 @@ export function useMessages(channelId: string | null) {
         void queryClient.invalidateQueries({ queryKey: ['messages', channelId] })
       }
     })
-  }, [channelId, queryClient])
+  }, [channelId, queryClient, selfId])
 
   return query
 }

@@ -6,6 +6,8 @@ import rateLimit from '@fastify/rate-limit'
 
 import { env } from './env.js'
 import { startAutoDeleteSweeper } from './lib/auto-delete.js'
+import { startBirthdaySweeper } from './lib/birthdays.js'
+import { startEventReminders } from './lib/event-reminders.js'
 import { startSecretEnvelopeSweeper } from './lib/secret-sweeper.js'
 import { makeLoggerOptions } from './lib/logger.js'
 import { redis } from './lib/redis.js'
@@ -28,7 +30,9 @@ import { threadsRoutes } from './routes/threads.js'
 import { usersRoutes } from './routes/users.js'
 import { internalRoutes } from './routes/internal.js'
 import { invitesRoutes } from './routes/invites.js'
+import { eventsRoutes } from './routes/events.js'
 import { messagesRoutes } from './routes/messages.js'
+import { pollsRoutes } from './routes/polls.js'
 import { reactionsRoutes } from './routes/reactions.js'
 import { rolesRoutes } from './routes/roles.js'
 import { serversRoutes } from './routes/servers.js'
@@ -77,6 +81,8 @@ async function main() {
   await app.register(rolesRoutes, { prefix: '/api' })
   await app.register(channelsRoutes, { prefix: '/api' })
   await app.register(messagesRoutes, { prefix: '/api' })
+  await app.register(pollsRoutes, { prefix: '/api' })
+  await app.register(eventsRoutes, { prefix: '/api' })
   await app.register(reactionsRoutes, { prefix: '/api' })
   await app.register(filesRoutes, { prefix: '/api' })
   await app.register(emojiRoutes, { prefix: '/api' })
@@ -114,6 +120,8 @@ async function main() {
 
   // Автоудаление сообщений в каналах с заданным сроком (настройки канала).
   startAutoDeleteSweeper(app.log)
+  startBirthdaySweeper(app.log)
+  startEventReminders(app.log)
   // Retention недоставленных секретных конвертов (T-102): чистим старше 30 дней.
   startSecretEnvelopeSweeper(app.log)
 }

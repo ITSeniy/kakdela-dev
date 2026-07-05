@@ -14,7 +14,7 @@ import { listDms } from '../dm/api.js'
 import { listInboxMentions } from '../inbox/api.js'
 import { getServerDetail, listMembers, type ServerDetail } from '../servers/api.js'
 import { playSound } from '../sounds/sounds.js'
-import { useNotifyPrefs } from './prefs.js'
+import { isChannelMuted, isMuteActive, useNotifyPrefs } from './prefs.js'
 
 // Срочность важнее тишины: уведомления уходят сразу, без поканального
 // кулдауна. От «пулемёта» защищает не задержка, а tag — ОС заменяет прошлый
@@ -61,6 +61,43 @@ function parseLocation(loc: string): NotifyTriggersUi {
   m = /^\/dm\/([0-9a-f-]+)/i.exec(loc)
   if (m && m[1] && m[1] !== 'with') return { serverChannelId: null, dmChannelId: m[1] }
   return { serverChannelId: null, dmChannelId: null }
+}
+
+/**
+ * Замьючен ли канал: прямой мьют канала ИЛИ мьют его сервера. Сервер канала
+ * резолвим только по кэшу деталей замьюченных серверов — их мало, а промах
+ * кэша (сервер ни разу не открывали) означает лишь, что server-мьют не
+ * сработает для этого тоста; channel-мьют работает всегда.
+ */
+function isMutedByPrefs(
+  channelId: string,
+  queryClient: ReturnType<typeof useQueryClient>,
+): boolean {
+  if (isChannelMuted(channelId)) return true
+  const mutedServers = useNotifyPrefs.getState().mutedServers
+  for (const sid of Object.keys(mutedServers)) {
+    if (!isMuteActive(mutedServers[sid])) continue
+    const d = queryClient.getQueryData<ServerDetail>(['server', sid])
+    if (d?.channels.some((c) => c.id === channelId)) return true
+  }
+  return false
+}
+
+/**
+ * Путь к каналу для deep-link'а: серверный канал ищем по кэшу деталей
+ * серверов, не нашли — считаем личкой.
+ */
+function resolveEventPath(
+  channelId: string,
+  queryClient: ReturnType<typeof useQueryClient>,
+): string {
+  const details = queryClient.getQueriesData<ServerDetail>({ queryKey: ['server'] })
+  for (const [, d] of details) {
+    if (d?.channels.some((c) => c.id === channelId)) {
+      return `/servers/${d.server.id}/channels/${channelId}`
+    }
+  }
+  return `/dm/${channelId}`
 }
 
 /**
@@ -144,6 +181,8 @@ export function useNotifyTriggers(): void {
         // Счётчики/бейджи освежаем всегда — даже когда сам toast не нужен.
         invalidateUnread(queryClient)
         if (!useNotifyPrefs.getState().mentions) return
+        // Мьют канала/сервера глушит toast и звук; бейджи выше уже обновлены.
+        if (isMutedByPrefs(event.channelId, queryClient)) return
         // Канал открыт и окно в фокусе → toast лишний, хватит обновления badge.
         if (!shouldNotify(event.channelId, uiRef.current, focusedRef.current)) return
         // Дедуп с «все сообщения»: если это сообщение уже всплыло — не дублируем.
@@ -180,6 +219,7 @@ export function useNotifyTriggers(): void {
           }
           if (serverId) {
             if (event.message.system) return
+            if (isMutedByPrefs(event.channelId, queryClient)) return
             if (!shouldNotify(event.channelId, uiRef.current, focusedRef.current)) return
             if (!markNotified(event.message.id)) return
             playNotifySound()
@@ -190,7 +230,11 @@ export function useNotifyTriggers(): void {
             const trimmed = event.message.content.replace(/\s+/g, ' ').trim()
             const body = trimmed
               ? (trimmed.length > 140 ? trimmed.slice(0, 139) + '…' : trimmed)
-              : 'вложение'
+              : event.message.poll
+                ? `опрос: ${event.message.poll.question}`
+                : event.message.event
+                  ? `встреча: ${event.message.event.title}`
+                  : 'вложение'
             const sid = serverId
             void notify({
               title: `${authorName} · #${channelName}`,
@@ -229,14 +273,19 @@ export function useNotifyTriggers(): void {
           // не дёргают тостом/звуком — оба уже были в звонке.
           if (event.message.system) return
 
-          // Дальше — только сам toast: по настройкам и фокусу.
+          // Дальше — только сам toast: по настройкам, мьюту диалога и фокусу.
           if (!useNotifyPrefs.getState().dms) return
+          if (isChannelMuted(event.channelId)) return
           if (!shouldNotify(event.channelId, uiRef.current, focusedRef.current)) return
           playNotifySound()
           const trimmed = event.message.content.replace(/\s+/g, ' ').trim()
           const body = trimmed
             ? (trimmed.length > 140 ? trimmed.slice(0, 139) + '…' : trimmed)
-            : 'вложение'
+            : event.message.poll
+              ? `опрос: ${event.message.poll.question}`
+              : event.message.event
+                ? `встреча: ${event.message.event.title}`
+                : 'вложение'
           void notify({
             title: `${dm.otherUser.displayName} в личных`,
             body,
@@ -245,6 +294,20 @@ export function useNotifyTriggers(): void {
             icon: { name: dm.otherUser.displayName, avatarUrl: dm.otherUser.avatarUrl },
           })
         })()
+        return
+      }
+
+      // Встреча через ~15 минут (targeted тем, кто «пойду»). Мьют не гейтит:
+      // юзер сам согласился идти — напоминание важнее тишины канала.
+      if (event.t === 'event.reminder') {
+        playNotifySound()
+        const when = new Date(event.startsAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })
+        void notify({
+          title: `скоро встреча · ${when}`,
+          body: event.place ? `${event.title} — ${event.place}` : event.title,
+          tag: `event:${event.messageId}`,
+          navigateTo: `${resolveEventPath(event.channelId, queryClient)}#msg:${event.messageId}`,
+        })
         return
       }
 

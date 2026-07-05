@@ -15,7 +15,10 @@ import { formatClock, useChatPrefs } from '../settings/chatPrefs.js'
 import { useThreadUi } from '../threads/store.js'
 import { pinMessage, unpinMessage } from './api.js'
 import { AttachmentList } from './AttachmentView.js'
+import { addReminder } from '../reminders/store.js'
+import { EventCard } from './EventCard.js'
 import { GifEmbed } from './GifEmbed.js'
+import { PollCard } from './PollCard.js'
 import { StickerEmbed } from './StickerEmbed.js'
 import { useChatDisplaySettings } from './displaySettings.js'
 import { ContextMenu } from './ContextMenu.js'
@@ -218,6 +221,10 @@ export function Message({
   const msgThread = 'thread' in message ? (message.thread ?? null) : null
   const msgGif = message.gif ?? null
   const msgSticker = message.sticker ?? null
+  const msgPoll = 'poll' in message ? (message.poll ?? null) : null
+  const pollEl = msgPoll ? <PollCard messageId={message.id} poll={msgPoll} /> : null
+  const msgEvent = 'event' in message ? (message.event ?? null) : null
+  const eventEl = msgEvent ? <EventCard messageId={message.id} event={msgEvent} memberMap={memberMap} /> : null
 
   // Цитата ответа — инлайном: эмодзи `:name:` и базовое форматирование.
   const replyHtml = useMemo(
@@ -342,6 +349,16 @@ export function Message({
       onReply={() => onReply(message as IMessage)}
       onStartThread={handleStartThread}
       onForward={() => openForward(message as IMessage)}
+      onRemind={(dueAt, label) => {
+        addReminder({
+          messageId: message.id,
+          link: `${window.location.pathname}#msg:${message.id}`,
+          authorName: name,
+          preview: message.content.replace(/\s+/g, ' ').trim().slice(0, 120),
+          dueAt,
+        })
+        toast.success(`напомним ${label}`)
+      }}
       onPin={() => handlePinToggle(true)}
       onUnpin={() => handlePinToggle(false)}
       onEdit={() => setEditing(true)}
@@ -532,11 +549,13 @@ export function Message({
             )}
           </div>
         </div>
-        {(msgAttachments.length > 0 || msgGif !== null || msgSticker !== null || msgThread !== null || reactionsEl !== null) && (
+        {(msgAttachments.length > 0 || msgGif !== null || msgSticker !== null || msgPoll !== null || msgEvent !== null || msgThread !== null || reactionsEl !== null) && (
           <div className="pl-11">
             {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} lightboxContext={lightboxContext} blur={nsfw} />}
             {msgGif && <GifEmbed gif={msgGif} />}
             {msgSticker && <StickerEmbed sticker={msgSticker} />}
+            {pollEl}
+            {eventEl}
             <ThreadBadge />
             {reactionsEl}
           </div>
@@ -577,6 +596,8 @@ export function Message({
           {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} lightboxContext={lightboxContext} blur={nsfw} />}
           {msgGif && <GifEmbed gif={msgGif} />}
           {msgSticker && <StickerEmbed sticker={msgSticker} />}
+          {pollEl}
+          {eventEl}
           <ThreadBadge />
           {reactionsEl}
         </div>
@@ -639,6 +660,8 @@ export function Message({
           {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} lightboxContext={lightboxContext} blur={nsfw} />}
           {msgGif && <GifEmbed gif={msgGif} />}
           {msgSticker && <StickerEmbed sticker={msgSticker} />}
+          {pollEl}
+          {eventEl}
           <ThreadBadge />
           {reactionsEl}
         </div>

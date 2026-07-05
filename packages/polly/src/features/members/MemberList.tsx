@@ -14,8 +14,11 @@ import { toast } from '../../components/toast/index.js'
 import { ApiError } from '../../lib/api.js'
 import { wsClient } from '../../lib/ws.js'
 import { useAuthStore } from '../auth/store.js'
+import { isBirthdayToday } from '../profile/format.js'
 import { useProfileUi } from '../profile/store.js'
 import { getServerDetail, kickMember, listMembers } from '../servers/api.js'
+import { ringUser } from '../voice/api.js'
+import { useVoiceStore } from '../voice/store.js'
 import { useVoiceChannelPresence } from '../voice/useVoiceChannelPresence.js'
 
 /** Позиция участника в иерархии ролей (owner=∞, admin=1e9, иначе макс. позиция
@@ -166,6 +169,7 @@ function MemberRow({
       <div className="flex-1 min-w-0">
         <div className="text-[12px] font-semibold text-kd-text flex items-center gap-1 truncate">
           <span className="truncate" style={nameColor ? { color: nameColor } : undefined}>{member.displayName}</span>
+          {isBirthdayToday(member.birthday) && <span title="сегодня день рождения!">🎂</span>}
           {tag && <Badge variant="role">{tag}</Badge>}
         </div>
         <div className="text-[10px] text-kd-text-soft truncate">
@@ -208,6 +212,29 @@ export function MemberList({ serverId, className }: MemberListProps) {
       { label: 'профиль', onClick: () => openProfile(m.id) },
       { label: 'написать в личные', onClick: () => navigate(`/dm/with/${m.id}`) },
     ]
+    // «Позвать в войс» — только когда я сам сижу в голосовом ЭТОГО сервера,
+    // а цель — не я и ещё не в голосе.
+    const myVoiceChannelId = useVoiceStore.getState().activeChannelId
+    if (
+      myVoiceChannelId !== null
+      && m.id !== me?.id
+      && !voiceIds.has(m.id)
+      && (detail?.channels.some((c) => c.id === myVoiceChannelId) ?? false)
+    ) {
+      const ringChannelId = myVoiceChannelId
+      items.push({
+        label: 'позвать в войс',
+        onClick: () => {
+          void ringUser(ringChannelId, m.id)
+            .then(() => toast.success(`позвали ${m.displayName}`))
+            .catch((err) => {
+              toast.error(err instanceof ApiError && err.code === 'ring-cooldown'
+                ? 'уже позвали — подождите немного'
+                : 'не получилось позвать')
+            })
+        },
+      })
+    }
     if (m.username) {
       items.push({ label: 'скопировать @ник', onClick: () => void navigator.clipboard?.writeText(`@${m.username}`) })
     }

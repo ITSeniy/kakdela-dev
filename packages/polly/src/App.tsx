@@ -19,6 +19,8 @@ import { SettingsScreen } from './features/settings/SettingsScreen.js'
 import { ForwardDialog } from './features/chat/ForwardDialog.js'
 import { CreateThreadDialog } from './features/threads/CreateThreadDialog.js'
 import { IncomingCall } from './features/voice/IncomingCall.js'
+import { IncomingRing } from './features/voice/IncomingRing.js'
+import { useReminderScheduler } from './features/reminders/store.js'
 import { useVoiceModerationSync } from './features/voice/moderationSync.js'
 import { startScreenPreviewUploader } from './features/voice/screenPreviewUploader.js'
 import { leaveVoiceRoom } from './features/voice/useVoiceRoom.js'
@@ -40,6 +42,7 @@ export function App() {
 
   // Серверная модерация голоса: применяем admin mute/deafen/move/kick к себе.
   useVoiceModerationSync()
+  useReminderScheduler()
 
   // Пока стримим в серверном ГС — периодически заливаем кадр демки для
   // hover-превью у тех, кто не в комнате.
@@ -176,6 +179,7 @@ export function App() {
       <ConnectionBanner />
       <CommandPalette />
       <IncomingCall />
+      <IncomingRing />
     </>
   )
 }

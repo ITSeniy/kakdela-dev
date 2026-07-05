@@ -232,6 +232,27 @@
       "when": 1783168624611,
       "tag": "0032_wise_captain_britain",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1783238960091,
+      "tag": "0033_careless_forgotten_one",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1783240906942,
+      "tag": "0034_narrow_centennial",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1783241418846,
+      "tag": "0035_yummy_maginty",
+      "breakpoints": true
     }
   ]
 }

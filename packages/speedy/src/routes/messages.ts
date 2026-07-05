@@ -11,8 +11,12 @@ import {
   PinnedMessagesResponseSchema,
   SendMessageRequestSchema,
   type Attachment,
+  type EventDefinition,
+  type EventView,
   type ForwardedRef,
   type GifEmbed,
+  type PollDefinition,
+  type PollView,
   type StickerRef,
   type LinkPreview,
   type ReactionAggregate,
@@ -22,7 +26,7 @@ import {
 } from '@kakdela/ginzu/api-types'
 import { hasPermission } from '@kakdela/ginzu/permissions'
 
-import { channels, dmChannels, memberRoles, mentions as mentionsTable, messages, reactions as reactionsTable, serverMembers, serverRoles, users } from '../db/schema.js'
+import { channels, dmChannels, eventRsvps, memberRoles, mentions as mentionsTable, messages, pollVotes, reactions as reactionsTable, serverMembers, serverRoles, users } from '../db/schema.js'
 import { db } from '../lib/db.js'
 import { env } from '../env.js'
 import { resolvePreviewsForContent } from '../lib/link-preview.js'
@@ -49,6 +53,8 @@ const MSG_COLS = {
   system:        messages.system,
   gif:           messages.gif,
   sticker:       messages.sticker,
+  poll:          messages.poll,
+  event:         messages.event,
 }
 
 async function resolveReplies(ids: string[]): Promise<Map<string, ReplyRef>> {
@@ -243,6 +249,8 @@ interface MsgRow {
   system: unknown
   gif: unknown
   sticker: unknown
+  poll: unknown
+  event: unknown
 }
 
 function serializeMessage(
@@ -251,6 +259,8 @@ function serializeMessage(
   replyTo: ReplyRef | null = null,
   attachments: Attachment[] = [],
   thread: ThreadInfo | null = null,
+  poll: PollView | null = null,
+  event: EventView | null = null,
 ) {
   return {
     id:        row.id,
@@ -276,6 +286,10 @@ function serializeMessage(
     gif: (row.gif as GifEmbed | null) ?? null,
     // Стикер (jsonb-снимок StickerRef); null — обычное сообщение.
     sticker: (row.sticker as StickerRef | null) ?? null,
+    // Опрос: собранный PollView (гидрация в loadPollsForMessages).
+    poll,
+    // Встреча: собранный EventView (гидрация в loadEventsForMessages).
+    event,
   }
 }
 
@@ -311,11 +325,107 @@ async function resolveAndBroadcastPreviews(
 }
 
 /**
- * Догидрирует набор строк сообщений до полных DTO: реакции, цитаты ответов,
- * вложения, тред-инфо. Общий путь для GET-странички, списка пинов и
- * одиночных операций (pin / forward).
+ * Собирает PollView для сообщений-опросов: счётчики по вариантам одним
+ * GROUP BY + голос смотрящего вторым запросом (viewerId null — myVote null).
  */
-async function hydrateMessages(rows: MsgRow[]) {
+async function loadPollsForMessages(
+  rows: MsgRow[],
+  viewerId: string | null,
+): Promise<Map<string, PollView>> {
+  const out = new Map<string, PollView>()
+  const pollRows = rows.filter((r) => r.poll != null)
+  if (pollRows.length === 0) return out
+  const pollIds = pollRows.map((r) => r.id)
+
+  const countRows = await db
+    .select({
+      messageId: pollVotes.messageId,
+      option:    pollVotes.option,
+      count:     sql<number>`count(*)::int`,
+    })
+    .from(pollVotes)
+    .where(inArray(pollVotes.messageId, pollIds))
+    .groupBy(pollVotes.messageId, pollVotes.option)
+  const countsByMsg = new Map<string, Map<number, number>>()
+  for (const r of countRows) {
+    const m = countsByMsg.get(r.messageId) ?? new Map<number, number>()
+    m.set(r.option, r.count)
+    countsByMsg.set(r.messageId, m)
+  }
+
+  const myVoteByMsg = new Map<string, number>()
+  if (viewerId) {
+    const mine = await db
+      .select({ messageId: pollVotes.messageId, option: pollVotes.option })
+      .from(pollVotes)
+      .where(and(inArray(pollVotes.messageId, pollIds), eq(pollVotes.userId, viewerId)))
+    for (const r of mine) myVoteByMsg.set(r.messageId, r.option)
+  }
+
+  for (const r of pollRows) {
+    const def = r.poll as PollDefinition
+    const counts = countsByMsg.get(r.id)
+    const options = def.options.map((text, i) => ({ text, votes: counts?.get(i) ?? 0 }))
+    out.set(r.id, {
+      question:   def.question,
+      options,
+      myVote:     myVoteByMsg.get(r.id) ?? null,
+      totalVotes: options.reduce((sum, o) => sum + o.votes, 0),
+    })
+  }
+  return out
+}
+
+/**
+ * Собирает EventView для сообщений-встреч: RSVP-списки одним запросом,
+ * myRsvp выводится из них же (viewerId).
+ */
+async function loadEventsForMessages(
+  rows: MsgRow[],
+  viewerId: string | null,
+): Promise<Map<string, EventView>> {
+  const out = new Map<string, EventView>()
+  const eventRows = rows.filter((r) => r.event != null)
+  if (eventRows.length === 0) return out
+  const ids = eventRows.map((r) => r.id)
+
+  const rsvpRows = await db
+    .select({ messageId: eventRsvps.messageId, userId: eventRsvps.userId, going: eventRsvps.going })
+    .from(eventRsvps)
+    .where(inArray(eventRsvps.messageId, ids))
+  const byMsg = new Map<string, { going: string[]; declined: string[] }>()
+  for (const r of rsvpRows) {
+    const entry = byMsg.get(r.messageId) ?? { going: [], declined: [] }
+    ;(r.going ? entry.going : entry.declined).push(r.userId)
+    byMsg.set(r.messageId, entry)
+  }
+
+  for (const r of eventRows) {
+    const def = r.event as EventDefinition
+    const entry = byMsg.get(r.id) ?? { going: [], declined: [] }
+    out.set(r.id, {
+      title:    def.title,
+      startsAt: def.startsAt,
+      place:    def.place ?? null,
+      going:    entry.going,
+      declined: entry.declined,
+      myRsvp:   viewerId === null
+        ? null
+        : entry.going.includes(viewerId) ? 'going'
+        : entry.declined.includes(viewerId) ? 'declined'
+        : null,
+    })
+  }
+  return out
+}
+
+/**
+ * Догидрирует набор строк сообщений до полных DTO: реакции, цитаты ответов,
+ * вложения, тред-инфо, опросы, встречи. Общий путь для GET-странички, списка
+ * пинов и одиночных операций (pin / forward). viewerId нужен опросам и
+ * встречам (myVote / myRsvp).
+ */
+async function hydrateMessages(rows: MsgRow[], viewerId: string | null = null) {
   if (rows.length === 0) return []
   const msgIds = rows.map((r) => r.id)
 
@@ -340,6 +450,8 @@ async function hydrateMessages(rows: MsgRow[]) {
   const replyMap = await resolveReplies(replyIds)
   const attachmentsMap = await loadAttachmentsForMessages(msgIds)
   const threadMap = await loadThreadInfoForMessages(msgIds)
+  const pollMap = await loadPollsForMessages(rows, viewerId)
+  const eventMap = await loadEventsForMessages(rows, viewerId)
 
   return rows.map((r) => serializeMessage(
     r,
@@ -347,6 +459,8 @@ async function hydrateMessages(rows: MsgRow[]) {
     r.replyToId ? (replyMap.get(r.replyToId) ?? null) : null,
     attachmentsMap.get(r.id) ?? [],
     threadMap.get(r.id) ?? null,
+    pollMap.get(r.id) ?? null,
+    eventMap.get(r.id) ?? null,
   ))
 }
 
@@ -495,7 +609,7 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
       rows.reverse()
 
       return reply.code(200).send({
-        messages: await hydrateMessages(rows),
+        messages: await hydrateMessages(rows, userId),
         nextCursor,
       })
     },
@@ -519,7 +633,7 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
     },
     async (req, reply) => {
       const { channelId } = req.params
-      const { content, replyToId, clientNonce, attachments: attachmentIds, spoilerAttachments, gif, sticker } = req.body
+      const { content, replyToId, clientNonce, attachments: attachmentIds, spoilerAttachments, gif, sticker, poll, event } = req.body
       const userId = req.authUser!.id
 
       const access = await assertCanAccessChannel(userId, channelId)
@@ -554,6 +668,8 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
           clientNonce: clientNonce ?? null,
           gif: gif ?? null,
           sticker: sticker ?? null,
+          poll: poll ?? null,
+          event: event ?? null,
         })
         .returning(MSG_COLS)
 
@@ -577,7 +693,27 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
       const replyToData = msg.replyToId
         ? (await resolveReplies([msg.replyToId])).get(msg.replyToId) ?? null
         : null
-      const serialized = serializeMessage(msg, [], replyToData, attachedFiles)
+      // Свежий опрос — нулевые счётчики, голосов ещё нет.
+      const freshPoll: PollView | null = poll
+        ? {
+            question:   poll.question,
+            options:    poll.options.map((text) => ({ text, votes: 0 })),
+            myVote:     null,
+            totalVotes: 0,
+          }
+        : null
+      // Свежая встреча — пустые RSVP-списки.
+      const freshEvent: EventView | null = event
+        ? {
+            title:    event.title,
+            startsAt: event.startsAt,
+            place:    event.place ?? null,
+            going:    [],
+            declined: [],
+            myRsvp:   null,
+          }
+        : null
+      const serialized = serializeMessage(msg, [], replyToData, attachedFiles, null, freshPoll, freshEvent)
       void broadcastToChannel(channelId, { t: 'msg.new', channelId, message: serialized })
 
       // OG-превью досъезжают асинхронно (WS msg.embeds) — не держим ответ.
@@ -786,7 +922,7 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
       pinned,
       pinnedAt: pinnedAt?.toISOString() ?? null,
     })
-    const [serialized] = await hydrateMessages([result])
+    const [serialized] = await hydrateMessages([result], req.authUser!.id)
     return serialized!
   }
 
@@ -835,7 +971,7 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
         .where(and(eq(messages.channelId, channelId), isNull(messages.deletedAt), isNotNull(messages.pinnedAt)))
         .orderBy(desc(messages.pinnedAt))
         .limit(100)
-      return reply.code(200).send({ messages: await hydrateMessages(rows) })
+      return reply.code(200).send({ messages: await hydrateMessages(rows, req.authUser!.id) })
     },
   )
 
@@ -892,7 +1028,7 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
         await persistMentions({ messageId: msg.id, channelId: toChannelId, parsed })
       }
 
-      const [serialized] = await hydrateMessages([msg])
+      const [serialized] = await hydrateMessages([msg], userId)
       void broadcastToChannel(toChannelId, { t: 'msg.new', channelId: toChannelId, message: serialized! })
       return reply.code(201).send(serialized!)
     },

@@ -145,6 +145,11 @@ export function MobileDmList() {
   })
   const emojiMap = useAllServerEmoji()
 
+  // «Заметки себе» — закреплённой строкой (после секретных), self-DM из
+  // общего списка фильтруем, чтобы не дублировался.
+  const selfDm = dms.find((d) => d.otherUser.id === user?.id)
+  const visibleDms = dms.filter((d) => d.otherUser.id !== user?.id)
+
   useEffect(() => {
     return wsClient.on((event) => {
       if (event.t === 'msg.new' || event.t === 'msg.edit' || event.t === 'msg.delete' || event.t === 'dm.new') {
@@ -177,10 +182,26 @@ export function MobileDmList() {
 
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
         <SecretEntryRow onClick={() => navigate('/secret')} />
-        {dms.length === 0 ? (
+        {/* «Заметки себе»: перекидывать ссылки/файлы между телефоном и ПК. */}
+        <button
+          type="button"
+          onClick={() => navigate(selfDm ? `/dm/${selfDm.channelId}` : `/dm/with/${user?.id}`)}
+          className="w-full flex items-center gap-3 px-4 py-2.5 text-left border-b border-kd-border/60 active:bg-kd-panel-alt"
+        >
+          <span className="w-[46px] h-[46px] rounded-full bg-kd-accent/15 border border-kd-accent/40 flex items-center justify-center shrink-0">
+            <Icon.Bookmark size={21} className="text-kd-accent" />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[15px] font-semibold text-kd-text">заметки себе</div>
+            <div className="text-[12px] text-kd-text-soft truncate mt-px">
+              {selfDm?.lastMessage ? selfDm.lastMessage.preview : 'ссылки и файлы для себя'}
+            </div>
+          </div>
+        </button>
+        {visibleDms.length === 0 ? (
           <EmptyChats onNew={() => navigate('/new')} />
         ) : (
-          dms.map((dm) => (
+          visibleDms.map((dm) => (
             <MobileDmRow
               key={dm.channelId}
               dm={dm}

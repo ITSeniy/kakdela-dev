@@ -88,6 +88,7 @@ export const dmRoutes: FastifyPluginAsyncZod = async (app) => {
           channelId: messages.channelId,
           authorId:  messages.authorId,
           content:   messages.content,
+          poll:      messages.poll,
           createdAt: messages.createdAt,
         })
         .from(messages)
@@ -143,6 +144,7 @@ export const dmRoutes: FastifyPluginAsyncZod = async (app) => {
         const last = lastByChannel.get(dm.channelId)
         summaries.push({
           channelId: dm.channelId,
+          peerLastReadMessageId: dm.userAId === userId ? dm.lastReadB : dm.lastReadA,
           otherUser: {
             id:           other.id,
             displayName:  other.displayName,
@@ -157,7 +159,10 @@ export const dmRoutes: FastifyPluginAsyncZod = async (app) => {
             ? {
                 id:        last.id,
                 authorId:  last.authorId,
-                preview:   preview(last.content),
+                // У сообщения-опроса content пустой — превью строим из вопроса.
+                preview:   last.poll
+                  ? preview(`[опрос] ${(last.poll as { question?: string }).question ?? ''}`)
+                  : preview(last.content),
                 createdAt: last.createdAt.toISOString(),
               }
             : null,
@@ -197,9 +202,10 @@ export const dmRoutes: FastifyPluginAsyncZod = async (app) => {
     async (req, reply) => {
       const me = req.authUser!.id
       const other = req.params.userId
-      if (me === other) {
-        return reply.code(400).send({ error: { code: 'self-dm', message: 'cannot dm yourself' } })
-      }
+      // me === other разрешён: «заметки себе» (Telegram Saved Messages).
+      // orderPair(me, me) даёт каноническую пару (me, me) — обычный DM-канал,
+      // где оба участника — один юзер; unread всегда 0 (свои сообщения не
+      // считаются), звонки клиент не показывает.
 
       const otherRows = await db
         .select({
@@ -363,6 +369,10 @@ export const dmRoutes: FastifyPluginAsyncZod = async (app) => {
         .update(dmChannels)
         .set(isA ? { lastReadA: messageId, hiddenA: false } : { lastReadB: messageId, hiddenB: false })
         .where(eq(dmChannels.channelId, channelId))
+
+      // Сообщаем собеседнику: его сообщения до messageId прочитаны (галочки).
+      const otherId = isA ? dm.userBId : dm.userAId
+      void broadcastToUser(otherId, { t: 'dm.read', channelId, userId, messageId })
 
       return reply.code(204).send(null)
     },

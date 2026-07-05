@@ -18,7 +18,10 @@ import { AttachmentList } from '../chat/AttachmentView.js'
 import { GifEmbed } from '../chat/GifEmbed.js'
 import { StickerEmbed } from '../chat/StickerEmbed.js'
 import { ContextMenu } from '../chat/ContextMenu.js'
+import { EventCard } from '../chat/EventCard.js'
 import { ForwardedCard } from '../chat/ForwardedCard.js'
+import { PollCard } from '../chat/PollCard.js'
+import { addReminder } from '../reminders/store.js'
 import { InviteEmbeds } from '../chat/InviteCard.js'
 import { LinkPreviews } from '../chat/LinkPreviewCard.js'
 import { useForwardUi } from '../chat/forwardStore.js'
@@ -35,6 +38,8 @@ interface DmBubbleListProps {
   memberMap: Map<string, MemberPublic>
   channelMap: Map<string, Channel>
   otherUser: DmSummary['otherUser'] | undefined
+  /** Курсор чтения собеседника: мои сообщения с id <= него получают ✓✓. */
+  peerReadUpTo?: string | null
   pending: PendingMessage[]
   onMention?: (userId: string) => void
   onEdit: (id: string, content: string) => void
@@ -198,6 +203,10 @@ interface DmBubbleProps {
   /** «Хвост» группы (последнее сообщение в склейке) — под ним и висит время. */
   isGroupTail: boolean
   currentUserId: string | null
+  /** Своё сообщение прочитано собеседником: ✓ → ✓✓ в meta-строке. */
+  readByPeer?: boolean
+  /** Скрыть галочки доставки (заметки себе: собеседника нет). */
+  hideReceipt?: boolean
   pendingStatus?: 'sending' | 'error'
   memberMap: ReadonlyMap<string, MemberPublic>
   channelMap: ReadonlyMap<string, Channel>
@@ -214,7 +223,7 @@ interface DmBubbleProps {
 }
 
 function DmBubble({
-  message, member, isOwn, grouped, isGroupTail, currentUserId, pendingStatus,
+  message, member, isOwn, grouped, isGroupTail, currentUserId, readByPeer = false, hideReceipt = false, pendingStatus,
   memberMap, channelMap, emojiMap, enter = false, onMention,
   onEdit, onDelete, onRetry, onReply, onAddReaction, onRemoveReaction,
 }: DmBubbleProps) {
@@ -263,6 +272,8 @@ function DmBubble({
   const msgAttachments = 'attachments' in message ? (message.attachments ?? []) : []
   const msgGif = message.gif ?? null
   const msgSticker = message.sticker ?? null
+  const msgPoll = 'poll' in message ? (message.poll ?? null) : null
+  const msgEvent = 'event' in message ? (message.event ?? null) : null
 
   const name = member?.displayName ?? 'неизвестно'
   const time = fmtTime(message.createdAt)
@@ -330,6 +341,16 @@ function DmBubble({
       onPickReaction={(emoji) => onAddReaction(message.id, emoji)}
       onReply={() => onReply(message as IMessage)}
       onForward={() => openForward(message as IMessage)}
+      onRemind={(dueAt, label) => {
+        addReminder({
+          messageId: message.id,
+          link: `${window.location.pathname}#msg:${message.id}`,
+          authorName: name,
+          preview: message.content.replace(/\s+/g, ' ').trim().slice(0, 120),
+          dueAt,
+        })
+        toast.success(`напомним ${label}`)
+      }}
       onPin={() => handlePinToggle(true)}
       onUnpin={() => handlePinToggle(false)}
       onEdit={() => setEditing(true)}
@@ -451,10 +472,21 @@ function DmBubble({
         {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} />}
         {msgGif && <GifEmbed gif={msgGif} />}
         {msgSticker && <StickerEmbed sticker={msgSticker} />}
+        {msgPoll && <PollCard messageId={message.id} poll={msgPoll} />}
+        {msgEvent && <EventCard messageId={message.id} event={msgEvent} memberMap={memberMap} />}
         {showMeta && (
           <div className="flex items-center gap-1.5 mt-[2px] px-1 text-[10px] font-mono text-kd-text-mute">
             <span>{time}</span>
             {message.editedAt && <span className="text-[9px]">(изм.)</span>}
+            {/* Галочки как в Telegram: ✓ доставлено, ✓✓ прочитано собеседником. */}
+            {isOwn && !pendingStatus && !hideReceipt && (
+              <span
+                title={readByPeer ? 'прочитано' : 'доставлено'}
+                className={readByPeer ? 'text-kd-accent' : ''}
+              >
+                {readByPeer ? '✓✓' : '✓'}
+              </span>
+            )}
             {pendingStatus === 'sending' && <span className="text-[9px]">отправляется…</span>}
             {pendingStatus === 'error' && onRetry && (
               <button type="button" onClick={onRetry} className="text-[9px] text-kd-danger hover:underline">
@@ -500,7 +532,7 @@ function DmBubble({
 }
 
 export function DmBubbleList({
-  channelId, currentUserId, memberMap, channelMap, otherUser, pending,
+  channelId, currentUserId, memberMap, channelMap, otherUser, peerReadUpTo, pending,
   onMention, onEdit, onDelete, onRetry, onReply, onAddReaction, onRemoveReaction,
 }: DmBubbleListProps) {
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage } = useMessages(channelId)
@@ -752,10 +784,14 @@ export function DmBubbleList({
           <Avatar name={otherUser.displayName} avatarUrl={otherUser.avatarUrl} size={48} />
           <div className="flex-1 min-w-0">
             <div className="text-[13px] font-bold text-kd-text">
-              это начало вашей переписки с {otherUser.displayName}
+              {otherUser.id === currentUserId
+                ? 'это ваши заметки'
+                : `это начало вашей переписки с ${otherUser.displayName}`}
             </div>
             <div className="text-[11px] text-kd-text-soft mt-0.5">
-              личные сообщения видны только вам двоим.
+              {otherUser.id === currentUserId
+                ? 'кидайте сюда ссылки и файлы — они синхронизируются между компьютером и телефоном.'
+                : 'личные сообщения видны только вам двоим.'}
             </div>
           </div>
         </div>
@@ -781,6 +817,14 @@ export function DmBubbleList({
             grouped={row.grouped}
             isGroupTail={row.tail}
             currentUserId={currentUserId}
+            readByPeer={
+              !row.isPending
+              && m.authorId === currentUserId
+              && peerReadUpTo != null
+              // id — uuidv7 (time-ordered), поэтому строкового сравнения хватает.
+              && m.id <= peerReadUpTo
+            }
+            hideReceipt={otherUser !== undefined && otherUser.id === currentUserId}
             enter={enter}
             pendingStatus={row.isPending ? (m as PendingMessage)._pending : undefined}
             memberMap={memberMap}

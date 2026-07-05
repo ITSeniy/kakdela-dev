@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { getUiZoom } from '../settings/appearance.js'
+import { reminderPresets } from '../reminders/store.js'
 
 interface ContextMenuProps {
   x: number
@@ -19,6 +20,8 @@ interface ContextMenuProps {
   onReply: () => void
   onStartThread?: () => void
   onForward?: () => void
+  /** «Напомнить об этом» — вызывается с моментом срабатывания (epoch ms). */
+  onRemind?: (dueAt: number, label: string) => void
   onPin?: () => void
   onUnpin?: () => void
   onEdit: () => void
@@ -61,9 +64,11 @@ function Item({
 
 export function ContextMenu({
   x, y, isOwn, canDelete, editDisabled, hideStartThread, pinned, canPin, onPickReaction,
-  onReply, onStartThread, onForward, onPin, onUnpin, onEdit, onDelete, onCopyText, onCopyLink, onClose,
+  onReply, onStartThread, onForward, onRemind, onPin, onUnpin, onEdit, onDelete, onCopyText, onCopyLink, onClose,
 }: ContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
+  // «Напомнить» раскрывает пресеты прямо в меню (вложенных меню у нас нет).
+  const [remindOpen, setRemindOpen] = useState(false)
   // Позиция после измерения реального размера меню: пока null — рендерим
   // невидимо в точке клика, после measure прижимаем к краям окна (а если
   // снизу не влезает — открываем вверх от курсора, как в Discord).
@@ -142,6 +147,17 @@ export function ContextMenu({
       <Item onClick={() => { onCopyLink(); onClose() }}>Копировать ссылку</Item>
       {onForward && (
         <Item onClick={() => { onForward(); onClose() }}>Переслать</Item>
+      )}
+      {onRemind && (
+        remindOpen ? (
+          reminderPresets().map((p) => (
+            <Item key={p.label} onClick={() => { onRemind(p.dueAt, p.label); onClose() }}>
+              <span className="pl-3">{p.label}</span>
+            </Item>
+          ))
+        ) : (
+          <Item onClick={() => setRemindOpen(true)}>Напомнить ▸</Item>
+        )
       )}
       {canPin && (pinned
         ? <Item onClick={() => { onUnpin?.(); onClose() }}>Открепить</Item>

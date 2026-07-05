@@ -10,6 +10,7 @@ import { Avatar } from '../../components/Avatar.js'
 import { Field } from '../../components/form/Field.js'
 import { AvatarCropper } from './AvatarCropper.js'
 import { BannerPicker } from './BannerPicker.js'
+import { BirthdaySelect } from './BirthdaySelect.js'
 import { TimezoneSelect } from './TimezoneSelect.js'
 import { patchMe } from './api.js'
 
@@ -33,6 +34,7 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
   const [avatarUrl, setAvatarUrl] = useState<string | null>(profile.avatarUrl)
   const [about, setAbout] = useState(profile.about ?? '')
   const [timezone, setTimezone] = useState<string | null>(profile.timezone)
+  const [birthday, setBirthday] = useState<string | null>(profile.birthday)
   const [bannerUrl, setBannerUrl] = useState<string | null>(profile.bannerUrl)
   const [cropperOpen, setCropperOpen] = useState(false)
   const [avatarBusy, setAvatarBusy] = useState(false)
@@ -49,6 +51,7 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
     || (customStatus || null) !== (profile.customStatus ?? null)
     || (about.trim() || null) !== (profile.about ?? null)
     || timezone !== profile.timezone
+    || birthday !== profile.birthday
     || bannerUrl !== profile.bannerUrl
     || newPassword !== ''
 
@@ -119,6 +122,7 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
       const nextAbout = about.trim() === '' ? null : about.trim()
       if (nextAbout !== (profile.about ?? null)) updates.about = nextAbout
       if (timezone !== profile.timezone) updates.timezone = timezone
+      if (birthday !== profile.birthday) updates.birthday = birthday
       if (bannerUrl !== profile.bannerUrl) updates.bannerUrl = bannerUrl
       if (newPassword) {
         updates.currentPassword = currentPassword
@@ -217,6 +221,10 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
 
       <Field label="часовой пояс" hint="друзья увидят, который у тебя час">
         <TimezoneSelect value={timezone} onChange={setTimezone} />
+      </Field>
+
+      <Field label="день рождения" hint="в этот день в чат прилетит поздравление 🎂 (год не указывается)">
+        <BirthdaySelect value={birthday} onChange={setBirthday} />
       </Field>
 
       <Field label="смена пароля" hint="требуется текущий пароль; смена сбрасывает все сессии">

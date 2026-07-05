@@ -153,6 +153,7 @@ export const usersRoutes: FastifyPluginAsyncZod = async (app) => {
         status:        liveStatus,
         about:         target.about ?? null,
         timezone:      target.timezone ?? null,
+        birthday:      target.birthday ?? null,
         bannerUrl:     target.bannerUrl ?? null,
         createdAt:     target.createdAt.toISOString(),
         sharedServers,
@@ -214,6 +215,18 @@ export const usersRoutes: FastifyPluginAsyncZod = async (app) => {
       if (body.avatarUrl !== undefined)    updates.avatarUrl    = body.avatarUrl
       if (body.about !== undefined)        updates.about        = body.about
       if (body.timezone !== undefined)     updates.timezone     = body.timezone
+      if (body.birthday !== undefined) {
+        // Формат MM-DD проверила Zod-схема; здесь — валидность дня в месяце
+        // (високальное 02-29 разрешаем: сработает в невисокосный год 1 марта).
+        if (body.birthday !== null) {
+          const [mm, dd] = body.birthday.split('-').map(Number)
+          const daysInMonth = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+          if (!mm || !dd || dd > (daysInMonth[mm - 1] ?? 0)) {
+            return reply.code(400).send({ error: { code: 'bad-birthday', message: 'invalid day for month' } })
+          }
+        }
+        updates.birthday = body.birthday
+      }
       if (body.bannerUrl !== undefined)    updates.bannerUrl    = body.bannerUrl
 
       if (Object.keys(updates).length > 0) {

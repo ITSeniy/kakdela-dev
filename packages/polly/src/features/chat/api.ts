@@ -1,4 +1,4 @@
-import type { GifEmbed, Message, MessagesPage, PinnedMessagesResponse, StickerRef } from '@kakdela/ginzu/api-types'
+import type { EventDefinition, EventRsvp, GifEmbed, Message, MessagesPage, PinnedMessagesResponse, PollDefinition, StickerRef } from '@kakdela/ginzu/api-types'
 
 import { apiFetch } from '../../lib/api.js'
 
@@ -22,6 +22,8 @@ export interface SendMessageBody {
   spoilerAttachments?: string[]
   gif?: GifEmbed
   sticker?: StickerRef
+  poll?: PollDefinition
+  event?: EventDefinition
 }
 
 export async function sendMessage(channelId: string, body: SendMessageBody): Promise<Message> {
@@ -52,6 +54,24 @@ export async function addReaction(messageId: string, emoji: string): Promise<voi
 export async function removeReaction(messageId: string, emoji: string): Promise<void> {
   await apiFetch<void>(`/api/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`, {
     method: 'DELETE',
+  })
+}
+
+export async function votePoll(messageId: string, option: number): Promise<void> {
+  await apiFetch<void>(`/api/messages/${messageId}/poll-vote`, {
+    method: 'POST',
+    body: JSON.stringify({ option }),
+  })
+}
+
+export async function unvotePoll(messageId: string): Promise<void> {
+  await apiFetch<void>(`/api/messages/${messageId}/poll-vote`, { method: 'DELETE' })
+}
+
+export async function rsvpEvent(messageId: string, rsvp: EventRsvp | null): Promise<void> {
+  await apiFetch<void>(`/api/messages/${messageId}/event-rsvp`, {
+    method: 'POST',
+    body: JSON.stringify({ rsvp }),
   })
 }
 

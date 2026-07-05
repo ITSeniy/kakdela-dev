@@ -154,7 +154,106 @@ async function dmPeerOf(channelId: string, userId: string): Promise<string | nul
   return null
 }
 
+// «Позвать в войс»: кулдаун пары зовущий→зовомый, чтобы кнопку нельзя было
+// зажать в спам. В памяти процесса (self-host = один инстанс speedy).
+const RING_COOLDOWN_MS = 30_000
+const lastRingAt = new Map<string, number>()
+
 export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
+  // ───── POST /api/voice/:channelId/ring/:userId ─────
+  // Позвать участника сервера в голосовой канал: targeted WS-событие
+  // voice.ring с именем/аватаром зовущего (эффективный серверный профиль).
+  app.post(
+    '/voice/:channelId/ring/:userId',
+    {
+      preHandler: app.authenticate,
+      schema: {
+        params: z.object({ channelId: z.string().uuid(), userId: z.string().uuid() }),
+        response: {
+          204: z.null(),
+          400: ErrorBodySchema,
+          401: ErrorBodySchema,
+          403: ErrorBodySchema,
+          404: ErrorBodySchema,
+          429: ErrorBodySchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const { channelId, userId: targetId } = req.params
+      const fromId = req.authUser!.id
+      if (targetId === fromId) {
+        return reply.code(400).send({
+          error: { code: 'self-ring', message: 'cannot ring yourself' },
+        })
+      }
+
+      const channelRows = await db
+        .select({ serverId: channels.serverId, kind: channels.kind, name: channels.name })
+        .from(channels)
+        .where(eq(channels.id, channelId))
+        .limit(1)
+      const channel = channelRows[0]
+      if (!channel || !channel.serverId) throw notFound('channel-not-found', 'channel not found')
+      if (channel.kind !== 'voice') {
+        return reply.code(400).send({
+          error: { code: 'not-a-voice-channel', message: 'channel is not a voice channel' },
+        })
+      }
+
+      await assertMember(fromId, channel.serverId)
+
+      const targetRows = await db
+        .select({ userId: serverMembers.userId })
+        .from(serverMembers)
+        .where(and(
+          eq(serverMembers.serverId, channel.serverId),
+          eq(serverMembers.userId, targetId),
+        ))
+        .limit(1)
+      if (!targetRows[0]) throw notFound('user-not-in-server', 'user is not a member of this server')
+
+      const cdKey = `${fromId}:${targetId}`
+      const last = lastRingAt.get(cdKey)
+      if (last !== undefined && Date.now() - last < RING_COOLDOWN_MS) {
+        return reply.code(429).send({
+          error: { code: 'ring-cooldown', message: 'ring already sent, wait a bit' },
+        })
+      }
+      lastRingAt.set(cdKey, Date.now())
+
+      // Эффективный серверный профиль зовущего: ник/аватар сервера поверх глобальных.
+      const fromRows = await db
+        .select({
+          displayName: users.displayName,
+          avatarUrl:   users.avatarUrl,
+          nickname:    serverMembers.nickname,
+          serverAvatar: serverMembers.avatarUrl,
+        })
+        .from(users)
+        .leftJoin(serverMembers, and(
+          eq(serverMembers.userId, users.id),
+          eq(serverMembers.serverId, channel.serverId),
+        ))
+        .where(eq(users.id, fromId))
+        .limit(1)
+      const from = fromRows[0]
+      if (!from) throw notFound('user-not-found', 'user not found')
+
+      void broadcastToUser(targetId, {
+        t: 'voice.ring',
+        channelId,
+        channelName: channel.name,
+        serverId: channel.serverId,
+        fromUserId: fromId,
+        fromName: from.nickname ?? from.displayName,
+        fromAvatarUrl: from.serverAvatar ?? from.avatarUrl,
+      })
+
+      return reply.code(204).send(null)
+    },
+  )
+
   // ───── POST /api/voice/:channelId/join ─────
   app.post(
     '/voice/:channelId/join',

@@ -20,6 +20,8 @@ import {
   type FilePickerCategory,
 } from '../files/upload.js'
 import { Attachments, type PendingAttachment } from './Attachments.js'
+import { CreateEventModal } from './CreateEventModal.js'
+import { CreatePollModal } from './CreatePollModal.js'
 import { VideoNoteOverlay } from './VideoNoteRecorder.js'
 import { VoiceRecorderBar } from './VoiceRecorder.js'
 import { useNoteRecorder } from './useNoteRecorder.js'
@@ -164,6 +166,8 @@ export function Composer({
   const [pickerOpen, setPickerOpen] = useState(false)
   const [gifOpen, setGifOpen] = useState(false)
   const [stickerOpen, setStickerOpen] = useState(false)
+  const [pollOpen, setPollOpen] = useState(false)
+  const [eventOpen, setEventOpen] = useState(false)
   // Всплывашка форматирования — пока в textarea есть выделение.
   const [hasSelection, setHasSelection] = useState(false)
   // @упоминание под курсором: позиция '@' и набранный кусок имени.
@@ -824,6 +828,26 @@ export function Composer({
               </div>
             )}
           </div>
+          {channelId && (
+            <>
+              <button
+                type="button"
+                title="создать опрос"
+                onClick={() => { setPollOpen(true); setGifOpen(false); setPickerOpen(false); setStickerOpen(false) }}
+                className={`inline-flex items-center justify-center h-5 w-5 transition-colors ${pollOpen ? 'text-kd-accent' : 'hover:text-kd-text-soft'}`}
+              >
+                <Icon.BarChart size={15} />
+              </button>
+              <button
+                type="button"
+                title="назначить встречу"
+                onClick={() => { setEventOpen(true); setGifOpen(false); setPickerOpen(false); setStickerOpen(false) }}
+                className={`inline-flex items-center justify-center h-5 w-5 transition-colors ${eventOpen ? 'text-kd-accent' : 'hover:text-kd-text-soft'}`}
+              >
+                <Icon.Calendar size={15} />
+              </button>
+            </>
+          )}
           <div className="relative" ref={pickerContainerRef}>
             <button
               type="button"
@@ -893,6 +917,12 @@ export function Composer({
           </>
         )}
       </div>
+      {pollOpen && channelId && (
+        <CreatePollModal channelId={channelId} onClose={() => setPollOpen(false)} />
+      )}
+      {eventOpen && channelId && (
+        <CreateEventModal channelId={channelId} onClose={() => setEventOpen(false)} />
+      )}
     </div>
   )
 }

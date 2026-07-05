@@ -39,6 +39,9 @@ export const users = pgTable('users', {
   // фото-баннер вместо градиента в карточке профиля.
   about:        text('about'),
   timezone:     text('timezone'),
+  // День рождения «MM-DD» (год не храним): системное поздравление в
+  // default-канал + 🎂 в профиле и списке участников.
+  birthday:     text('birthday'),
   bannerUrl:    text('banner_url'),
   status:       userStatusEnum('status').notNull().default('offline'),
   customStatus: text('custom_status'),
@@ -241,6 +244,12 @@ export const messages = pgTable(
     gif: jsonb('gif'),
     // Стикер-вложение (StickerRef-снимок): {stickerId, name, imageUrl, w, h}.
     sticker: jsonb('sticker'),
+    // Опрос (PollDefinition): {question, options: string[]}. null — обычное
+    // сообщение. Голоса — в poll_votes; счётчики собираются на чтении.
+    poll: jsonb('poll'),
+    // Встреча (EventDefinition): {title, startsAt, place}. null — обычное
+    // сообщение. RSVP — в event_rsvps; списки собираются на чтении.
+    event: jsonb('event'),
   },
   (t) => ({
     channelIdIdx:      index('messages_channel_id_id_idx').on(t.channelId, t.id),
@@ -261,6 +270,39 @@ export const reactions = pgTable(
   (t) => ({
     pk:       primaryKey({ columns: [t.messageId, t.userId, t.emoji] }),
     msgIdIdx: index('reactions_message_id_idx').on(t.messageId),
+  }),
+)
+
+// RSVP на встречах: один ответ на юзера («пойду» going=true / «не пойду»
+// false). Повторный ответ переносит (upsert), null в API снимает (delete).
+export const eventRsvps = pgTable(
+  'event_rsvps',
+  {
+    messageId: uuid('message_id').notNull().references(() => messages.id, { onDelete: 'cascade' }),
+    userId:    uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    going:     boolean('going').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk:       primaryKey({ columns: [t.messageId, t.userId] }),
+    msgIdIdx: index('event_rsvps_message_id_idx').on(t.messageId),
+  }),
+)
+
+// Голоса в опросах: один голос на юзера в сообщении (single-choice, как в
+// Telegram). Повторный голос переносит выбор (upsert), клик по своему
+// варианту снимает голос (delete).
+export const pollVotes = pgTable(
+  'poll_votes',
+  {
+    messageId: uuid('message_id').notNull().references(() => messages.id, { onDelete: 'cascade' }),
+    userId:    uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    option:    integer('option').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk:       primaryKey({ columns: [t.messageId, t.userId] }),
+    msgIdIdx: index('poll_votes_message_id_idx').on(t.messageId),
   }),
 )
 

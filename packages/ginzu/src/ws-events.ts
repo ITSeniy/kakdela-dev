@@ -22,7 +22,19 @@ export type ServerEvent =
   | { t: 'member.leave'; serverId: string; userId: string }
   | { t: 'reaction.add'; channelId: string; messageId: string; userId: string; emoji: string }
   | { t: 'reaction.remove'; channelId: string; messageId: string; userId: string; emoji: string }
+  // Голос в опросе изменился. votes — свежие счётчики по вариантам (полный
+  // пересчёт на сервере, клиент просто заменяет). voterId + option позволяют
+  // самому голосовавшему обновить myVote на других устройствах; option null =
+  // голос снят.
+  | { t: 'poll.vote'; channelId: string; messageId: string; votes: number[]; voterId: string; option: number | null }
+  // RSVP на встрече изменился. going/declined — полные свежие списки userId.
+  | { t: 'event.rsvp'; channelId: string; messageId: string; going: string[]; declined: string[]; voterId: string; rsvp: 'going' | 'declined' | null }
+  // Напоминание о встрече за ~15 минут — targeted тем, кто ответил «пойду».
+  | { t: 'event.reminder'; channelId: string; messageId: string; title: string; startsAt: string; place: string | null }
   | { t: 'dm.new'; channelId: string; withUserId: string }
+  // Собеседник продвинул курсор чтения в личке — клиент обновляет галочки ✓✓
+  // у своих сообщений с id <= messageId. Шлётся только второму участнику DM.
+  | { t: 'dm.read'; channelId: string; userId: string; messageId: string }
   // Звонок 1:1 в личке (T-087). Адресуются КОНКРЕТНОМУ userId (broadcastToUser),
   // не всему каналу — звонок приватный. invite несёт имя/аватар звонящего для
   // тоста; cancel — инициатор отменил/таймаут; decline — собеседник отклонил.
@@ -49,6 +61,18 @@ export type ServerEvent =
   // Админ перенёс участника в другой голосовой канал — клиент сам пере-джойнится.
   | { t: 'voice.moved'; userId: string; fromChannelId: string; toChannelId: string }
   | { t: 'voice.kicked'; channelId: string; userId: string }
+  // «Позвать в войс»: участник сервера зовёт конкретного юзера в голосовой
+  // канал. Targeted-событие (broadcastToUser), несёт имя/аватар зовущего и
+  // имя канала — клиенту хватает для тоста без дозапросов.
+  | {
+      t: 'voice.ring'
+      channelId: string
+      channelName: string
+      serverId: string
+      fromUserId: string
+      fromName: string
+      fromAvatarUrl: string | null
+    }
   // Секретные чаты (Фаза 6): «тебе пришёл шифр-конверт». БЕЗ контента — клиент
   // идёт за ним в GET /api/secret/inbox и расшифровывает локально.
   | { t: 'secret.envelope'; id: string; fromUserId: string }
@@ -80,7 +104,33 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('member.leave'), serverId: uuid, userId: uuid }),
   z.object({ t: z.literal('reaction.add'), channelId: uuid, messageId: uuid, userId: uuid, emoji: z.string() }),
   z.object({ t: z.literal('reaction.remove'), channelId: uuid, messageId: uuid, userId: uuid, emoji: z.string() }),
+  z.object({
+    t: z.literal('poll.vote'),
+    channelId: uuid,
+    messageId: uuid,
+    votes: z.array(z.number().int().nonnegative()),
+    voterId: uuid,
+    option: z.number().int().nullable(),
+  }),
+  z.object({
+    t: z.literal('event.rsvp'),
+    channelId: uuid,
+    messageId: uuid,
+    going: z.array(uuid),
+    declined: z.array(uuid),
+    voterId: uuid,
+    rsvp: z.enum(['going', 'declined']).nullable(),
+  }),
+  z.object({
+    t: z.literal('event.reminder'),
+    channelId: uuid,
+    messageId: uuid,
+    title: z.string(),
+    startsAt: z.string(),
+    place: z.string().nullable(),
+  }),
   z.object({ t: z.literal('dm.new'), channelId: uuid, withUserId: uuid }),
+  z.object({ t: z.literal('dm.read'), channelId: uuid, userId: uuid, messageId: uuid }),
   z.object({
     t: z.literal('dm.call-invite'),
     channelId: uuid,
@@ -134,6 +184,15 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('voice.mod'), channelId: uuid, userId: uuid, muted: z.boolean(), deafened: z.boolean() }),
   z.object({ t: z.literal('voice.moved'), userId: uuid, fromChannelId: uuid, toChannelId: uuid }),
   z.object({ t: z.literal('voice.kicked'), channelId: uuid, userId: uuid }),
+  z.object({
+    t: z.literal('voice.ring'),
+    channelId: uuid,
+    channelName: z.string(),
+    serverId: uuid,
+    fromUserId: uuid,
+    fromName: z.string(),
+    fromAvatarUrl: z.string().nullable(),
+  }),
   z.object({ t: z.literal('secret.envelope'), id: uuid, fromUserId: uuid }),
 ])
 

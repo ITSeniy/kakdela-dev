@@ -29,7 +29,14 @@ import {
   type ServerDetail,
 } from '../servers/api.js'
 import { ServerProfileModal } from '../servers/ServerProfileModal.js'
-import { useNotifyPrefs } from '../notify/prefs.js'
+import {
+  isMuteActive,
+  MUTE_FOREVER,
+  MUTE_PRESETS,
+  muteUntilFromPreset,
+  muteUntilLabel,
+  useNotifyPrefs,
+} from '../notify/prefs.js'
 import { clampFixed, useAppearance } from '../settings/appearance.js'
 import { useSettingsUi } from '../settings/store.js'
 import { ThreadList } from '../threads/ThreadList.js'
@@ -88,14 +95,16 @@ function groupChannels(channels: Channel[], categories: ChannelCategory[]): Cate
 }
 
 function ChannelRow({
-  channel, active, unread, onClick,
+  channel, active, unread, muted, onClick,
 }: {
   channel: Channel
   active: boolean
   unread?: boolean
+  /** Замьючен локально: приглушаем строку и не показываем «пилюлю» unread. */
+  muted?: boolean
   onClick: () => void
 }) {
-  const showUnread = unread && !active
+  const showUnread = unread && !active && !muted
   return (
     <button
       type="button"
@@ -107,7 +116,9 @@ function ChannelRow({
           ? 'bg-kd-panel-hi text-kd-text font-semibold border-l-2 border-kd-accent pl-[6px]'
           : showUnread
             ? 'text-kd-text font-semibold border-l-2 border-transparent'
-            : 'text-kd-text-soft hover:text-kd-text font-medium border-l-2 border-transparent',
+            : muted
+              ? 'text-kd-text-mute hover:text-kd-text-soft font-medium border-l-2 border-transparent'
+              : 'text-kd-text-soft hover:text-kd-text font-medium border-l-2 border-transparent',
       ].join(' ')}
     >
       {/* Белая «пилюля» непрочитанного у левого края (как в Discord). */}
@@ -116,6 +127,7 @@ function ChannelRow({
       )}
       {channel.kind === 'voice' ? <Icon.Speaker size={11} /> : <Icon.Hash size={11} />}
       <span className="flex-1 truncate">{channel.name}</span>
+      {muted && <Icon.BellOff size={10} className="shrink-0 opacity-60" />}
       {channel.nsfw && <Badge variant="nsfw">18+</Badge>}
       {/* LIVE у самого канала не показываем: бейдж означал «в канале кто-то
           есть» и путался с LIVE у участника («стримит»). Наличие людей и так
@@ -284,6 +296,9 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
   // Подписка «все сообщения» для этого сервера (локальная, persisted).
   const allMessages = useNotifyPrefs((s) => (serverId ? Boolean(s.serverAll[serverId]) : false))
   const setServerAll = useNotifyPrefs((s) => s.setServerAll)
+  const mutedChannels = useNotifyPrefs((s) => s.mutedChannels)
+  const mutedServers = useNotifyPrefs((s) => s.mutedServers)
+  const serverMutedNow = serverId ? isMuteActive(mutedServers[serverId]) : false
   const [createState, setCreateState] =
     useState<{ mode: CreateChannelMode; category?: string } | null>(null)
   const headerRef = useRef<HTMLDivElement>(null)
@@ -487,6 +502,23 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
           )
         },
       })
+    }
+    // Мьют локальный (per-device): глушит тосты/звук/unread-точку канала.
+    const { mutedChannels: mutedMap, muteChannel, unmuteChannel } = useNotifyPrefs.getState()
+    const mutedUntil = mutedMap[ch.id]
+    items.push({ kind: 'sep' })
+    if (mutedUntil !== undefined && isMuteActive(mutedUntil)) {
+      items.push({
+        label: `снять мьют (${muteUntilLabel(mutedUntil)})`,
+        onClick: () => unmuteChannel(ch.id),
+      })
+    } else {
+      items.push(
+        ...MUTE_PRESETS.map((p) => ({
+          label: `мьют ${p.label}`,
+          onClick: () => muteChannel(ch.id, muteUntilFromPreset(p.ms)),
+        })),
+      )
     }
     if (canManage) {
       items.push(
@@ -757,6 +789,16 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
                 {allMessages ? 'вкл' : 'выкл'}
               </span>
             </ServerMenuItem>
+            <ServerMenuItem
+              glyph={<Icon.BellOff size={12} className={serverMutedNow ? 'text-kd-warm' : 'text-kd-text-mute'} />}
+              onClick={() => {
+                const { muteServer, unmuteServer } = useNotifyPrefs.getState()
+                if (serverMutedNow) unmuteServer(serverId)
+                else muteServer(serverId, muteUntilFromPreset(MUTE_FOREVER))
+              }}
+            >
+              <span className="flex-1">{serverMutedNow ? 'снять мьют сервера' : 'замьютить сервер'}</span>
+            </ServerMenuItem>
             {canManage && (
               <>
                 <div className="my-1 h-px bg-kd-border mx-2" />
@@ -898,6 +940,7 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
                       channel={c}
                       active={isActive}
                       unread={unreadSet.has(c.id)}
+                      muted={serverMutedNow || isMuteActive(mutedChannels[c.id])}
                       onClick={() => {
                         navigate(`/servers/${c.serverId}/channels/${c.id}`)
                       }}
