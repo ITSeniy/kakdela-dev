@@ -8,6 +8,7 @@ import { Badge } from '../../components/Badge.js'
 import { confirmDialog } from '../../components/ConfirmDialog.js'
 import { Icon } from '../../components/Icon.js'
 import { toast } from '../../components/toast/index.js'
+import { memberNameColor } from '../members/MemberList.js'
 import { useProfileUi } from '../profile/store.js'
 import { useAppearance } from '../settings/appearance.js'
 import { formatClock, useChatPrefs } from '../settings/chatPrefs.js'
@@ -250,7 +251,7 @@ export function Message({
             <Avatar name={name} avatarUrl={member?.avatarUrl ?? null} size={32} />
             <div className="flex-1 min-w-0">
               <div className="flex items-baseline gap-1.5 flex-wrap">
-                <span className="text-[13px] font-bold text-kd-text">{name}</span>
+                <span className="text-[13px] font-bold text-kd-text" style={nameStyle}>{name}</span>
                 {role && <Badge variant="role">{role}</Badge>}
                 <span className="text-[10px] text-kd-text-mute font-mono">{time}</span>
               </div>
@@ -292,6 +293,10 @@ export function Message({
     !message.replyToId
 
   const name = member?.displayName ?? 'неизвестно'
+  // Цвет имени — старшая цветная роль (как в Discord); без неё — обычный
+  // text-kd-text из класса.
+  const nameColor = member ? memberNameColor(member) : null
+  const nameStyle = nameColor ? { color: nameColor } : undefined
   const role = member ? ROLE_TAG[member.role] ?? null : null
   const time = formatClock(message.createdAt, timeFormat)
   const opacityCls = pendingStatus === 'sending' ? 'opacity-60' : ''
@@ -503,6 +508,7 @@ export function Message({
             type="button"
             onClick={() => openProfile(message.authorId)}
             className="text-[13px] font-bold text-kd-text hover:underline shrink-0"
+            style={nameStyle}
           >
             {name}
           </button>
@@ -603,6 +609,7 @@ export function Message({
               type="button"
               onClick={() => openProfile(message.authorId)}
               className="text-[13px] font-bold text-kd-text hover:underline"
+              style={nameStyle}
             >
               {name}
             </button>
