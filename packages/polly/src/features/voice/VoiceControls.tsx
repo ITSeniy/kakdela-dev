@@ -11,8 +11,6 @@ interface VoiceControlsProps {
   onToggleCamera(): void
   onToggleScreenShare(): void
   onLeave(): void
-  /** Скрыть кнопку камеры (DM-звонок T-087: аудио + экран, без видео). */
-  hideCamera?: boolean
 }
 
 // Кнопка-капсула из designs/final-voice.jsx (KD_VCtrl). Панель лежит на
@@ -101,7 +99,6 @@ export function VoiceControls({
   onToggleCamera,
   onToggleScreenShare,
   onLeave,
-  hideCamera = false,
 }: VoiceControlsProps) {
   const muted = useVoiceStore((s) => s.muted)
   const deafened = useVoiceStore((s) => s.deafened)
@@ -158,17 +155,15 @@ export function VoiceControls({
         <Icon.Headphones size={13} />
       </CtrlButton>
 
-      {!hideCamera && (
-        <CtrlButton
-          label={cameraOn ? 'камера' : 'камера (выкл)'}
-          onClick={onToggleCamera}
-          active={cameraOn}
-          tone={cameraOn ? 'hot' : 'default'}
-          title={cameraOn ? 'выключить веб-камеру' : 'включить веб-камеру'}
-        >
-          <Icon.Video size={13} />
-        </CtrlButton>
-      )}
+      <CtrlButton
+        label={cameraOn ? 'камера' : 'камера (выкл)'}
+        onClick={onToggleCamera}
+        active={cameraOn}
+        tone={cameraOn ? 'hot' : 'default'}
+        title={cameraOn ? 'выключить веб-камеру' : 'включить веб-камеру'}
+      >
+        <Icon.Video size={13} />
+      </CtrlButton>
 
       <ScreenShareButton onToggleScreenShare={onToggleScreenShare} />
 

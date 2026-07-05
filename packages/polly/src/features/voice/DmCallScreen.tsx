@@ -2,8 +2,7 @@
 // voice-store / LiveKit-инфраструктуру, но без серверного контекста (нет
 // member-списка, модерации, theater-режима). Состояния: «звоним…» (один в
 // комнате, ждём ответа) и активный звонок (собеседник зашёл) — сетка тайлов
-// + панель управления. Демо экрана работает как в серверном канале; камера
-// вне скоупа (см. T-087).
+// + панель управления. Демо экрана и камера работают как в серверном канале.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -14,7 +13,9 @@ import { Badge } from '../../components/Badge.js'
 import { Icon } from '../../components/Icon.js'
 import { toast } from '../../components/toast/index.js'
 import {
+  getLocalCameraVideoTrack,
   getLocalScreenVideoTrack,
+  getRemoteCameraVideoTrack,
   getRemoteScreenVideoTrack,
   watchScreen,
 } from '../../lib/livekit.js'
@@ -23,6 +24,7 @@ import { useAuthStore } from '../auth/store.js'
 import { ParticipantTile } from './ParticipantTile.js'
 import { ScreenTile } from './ScreenTile.js'
 import { VoiceControls } from './VoiceControls.js'
+import { useCamera } from './useCamera.js'
 import { useScreenShare } from './useScreenShare.js'
 import { useVoiceRoom, type DmCallPeer } from './useVoiceRoom.js'
 import { useVoiceStore, type ParticipantState } from './store.js'
@@ -44,6 +46,7 @@ interface Tile {
   speaking: boolean
   isSelf: boolean
   screenTrack: LocalVideoTrack | RemoteVideoTrack | null
+  cameraTrack: LocalVideoTrack | RemoteVideoTrack | null
 }
 
 function formatElapsed(total: number): string {
@@ -56,10 +59,12 @@ export function DmCallScreen({ channelId, peer, onMinimize }: DmCallScreenProps)
   const me = useAuthStore((s) => s.user)
   const { leave, toggleMute, toggleDeafen } = useVoiceRoom()
   const { startShare, stopShare } = useScreenShare()
+  const { startCamera, stopCamera } = useCamera()
 
   const status = useVoiceStore((s) => s.status)
   const muted = useVoiceStore((s) => s.muted)
   const screenSharing = useVoiceStore((s) => s.screenSharing)
+  const cameraOn = useVoiceStore((s) => s.cameraOn)
   const participants = useVoiceStore((s) => s.participants)
   const activeSpeakers = useVoiceStore((s) => s.activeSpeakers)
   const selfSpeaking = useVoiceStore((s) => s.selfSpeaking)
@@ -141,6 +146,7 @@ export function DmCallScreen({ channelId, peer, onMinimize }: DmCallScreenProps)
       speaking: selfSpeaking,
       isSelf: true,
       screenTrack: null,
+      cameraTrack: cameraOn ? getLocalCameraVideoTrack() : null,
     })
     if (screenSharing) {
       const track = getLocalScreenVideoTrack()
@@ -148,7 +154,7 @@ export function DmCallScreen({ channelId, peer, onMinimize }: DmCallScreenProps)
         result.push({
           key: `screen:${me.id}`, kind: 'screen', userId: me.id,
           displayName: me.displayName, avatarUrl: me.avatarUrl ?? null,
-          muted, speaking: false, isSelf: true, screenTrack: track,
+          muted, speaking: false, isSelf: true, screenTrack: track, cameraTrack: null,
         })
       }
     }
@@ -163,6 +169,7 @@ export function DmCallScreen({ channelId, peer, onMinimize }: DmCallScreenProps)
         speaking: activeSpeakers.has(p.userId),
         isSelf: false,
         screenTrack: null,
+        cameraTrack: p.isCameraOn ? getRemoteCameraVideoTrack(p.userId) : null,
       })
       if (p.isScreenSharing) {
         const track = getRemoteScreenVideoTrack(p.userId)
@@ -170,13 +177,13 @@ export function DmCallScreen({ channelId, peer, onMinimize }: DmCallScreenProps)
           result.push({
             key: `screen:${p.userId}`, kind: 'screen', userId: p.userId,
             displayName: p.displayName || peerName, avatarUrl: peerAvatar,
-            muted: false, speaking: false, isSelf: false, screenTrack: track,
+            muted: false, speaking: false, isSelf: false, screenTrack: track, cameraTrack: null,
           })
         }
       }
     }
     return result
-  }, [me, muted, selfSpeaking, screenSharing, peerList, peerName, peerAvatar, activeSpeakers, watchedScreens])
+  }, [me, muted, selfSpeaking, screenSharing, cameraOn, peerList, peerName, peerAvatar, activeSpeakers, watchedScreens])
 
   const onToggleScreenShare = (): void => {
     if (screenSharing) void stopShare()
@@ -253,16 +260,16 @@ export function DmCallScreen({ channelId, peer, onMinimize }: DmCallScreenProps)
                     muted={t.muted}
                     speaking={t.speaking}
                     isSelf={t.isSelf}
+                    cameraTrack={t.cameraTrack}
                   />
                 )}
               </div>
             ))}
           </div>
           <VoiceControls
-            hideCamera
             onToggleMute={() => { void toggleMute() }}
             onToggleDeafen={() => { void toggleDeafen() }}
-            onToggleCamera={() => {}}
+            onToggleCamera={() => { if (cameraOn) void stopCamera(); else void startCamera() }}
             onToggleScreenShare={onToggleScreenShare}
             onLeave={() => { void leave() }}
           />

@@ -17,6 +17,9 @@ import { Avatar } from '../../components/Avatar.js'
 import { Icon } from '../../components/Icon.js'
 import { toast } from '../../components/toast/index.js'
 import { useThemeStore } from '../../lib/theme.js'
+import { openDmWithUser } from '../dm/api.js'
+import { joinDmCall } from '../voice/useVoiceRoom.js'
+import { useVoiceStore } from '../voice/store.js'
 import { getUserProfile } from './api.js'
 import { fmtJoined, fmtTzNow } from './format.js'
 
@@ -117,11 +120,35 @@ function ActionButton({ icon, label, primary, onClick }: {
 
 function OtherActions({ profile }: { profile: UserProfile }) {
   const [, navigate] = useLocation()
+  const activeChannelId = useVoiceStore((s) => s.activeChannelId)
+
+  // Профиль знает только userId — резолвим DM-канал (создастся, если его нет),
+  // ставим звонок в voice-очередь и уходим на экран переписки: DmScreen сам
+  // покажет активный звонок по callActiveHere.
+  async function onCall() {
+    if (activeChannelId !== null) {
+      toast.info('вы уже в другом звонке')
+      return
+    }
+    try {
+      const res = await openDmWithUser(profile.id)
+      navigate(`/dm/${res.channel.id}`)
+      await joinDmCall(res.channel.id, {
+        id: profile.id,
+        name: profile.displayName,
+        avatarUrl: profile.avatarUrl,
+      })
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : (err as Error).message
+      toast.error(msg || 'не получилось позвонить')
+    }
+  }
+
   return (
     <div className="px-5 pt-5 flex gap-2.5">
       <ActionButton icon={<Icon.Send size={19} />} label="написать" onClick={() => navigate(`/dm/with/${profile.id}`)} />
       <ActionButton icon={<Icon.Lock size={19} />} label="секретный" primary onClick={() => navigate(`/secret/${profile.id}`)} />
-      <ActionButton icon={<Icon.Phone size={19} />} label="позвонить" onClick={() => toast.info('звонки в личке — скоро')} />
+      <ActionButton icon={<Icon.Phone size={19} />} label="позвонить" onClick={() => { void onCall() }} />
     </div>
   )
 }
