@@ -44,7 +44,10 @@ export function ProfileSetupScreen({ onDone }: { onDone(): void }) {
     setAvatarBusy(true)
     setError(null)
     try {
-      const file = new File([blob], `avatar-${Date.now()}.jpg`, { type: 'image/jpeg' })
+      const isGif = blob.type === 'image/gif'
+      const file = new File([blob], `avatar-${Date.now()}.${isGif ? 'gif' : 'jpg'}`, {
+        type: isGif ? 'image/gif' : 'image/jpeg',
+      })
       const attachment = await uploadAttachment(file)
       setAvatarUrl(attachment.url)
       setCropperOpen(false)
@@ -114,16 +117,17 @@ export function ProfileSetupScreen({ onDone }: { onDone(): void }) {
             />
           </Field>
 
-          <Field label="аватар" hint="jpeg / png / webp до 2 МБ">
+          <Field label="аватар" hint="jpeg / png / webp / gif до 10 МБ · gif оживает в войсе, когда говоришь">
             {cropperOpen ? (
               <AvatarCropper
                 initialUrl={avatarUrl}
                 onConfirm={onAvatarCropConfirm}
                 onCancel={() => setCropperOpen(false)}
+                allowGif
               />
             ) : (
               <div className="flex items-center gap-4">
-                <Avatar name={displayName || user.username} avatarUrl={avatarUrl} size={72} />
+                <Avatar name={displayName || user.username} avatarUrl={avatarUrl} size={72} animate />
                 <div className="space-y-1.5">
                   <button
                     type="button"

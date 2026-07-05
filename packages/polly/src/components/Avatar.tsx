@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { pickAvatarColor } from './palette.js'
 import { type Status } from './StatusDot.js'
@@ -8,6 +8,66 @@ const STATUS_VAR: Record<Status, string> = {
   idle:    'var(--kd-idle)',
   dnd:     'var(--kd-dnd)',
   offline: 'var(--kd-text-mute)',
+}
+
+/** GIF-аватар: файловый пайплайн всегда кладёт объект с расширением по MIME. */
+export function isGifUrl(url: string): boolean {
+  return /\.gif($|[?#])/i.test(url)
+}
+
+/**
+ * Статичный первый кадр GIF-аватара. drawImage анимированной картинки по
+ * спеке берёт первый кадр — рисуем его в canvas и показываем canvas вместо
+ * <img>. Canvas может быть tainted (файлы с другого origin без CORS) — нам
+ * не важно, readback не делаем. При ошибке загрузки падаем на живой <img>.
+ */
+function GifPoster({ src, size, ringShadow }: { src: string; size: number; ringShadow?: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const img = new Image()
+    img.onload = () => {
+      if (cancelled) return
+      const canvas = canvasRef.current
+      const ctx = canvas?.getContext('2d')
+      if (!canvas || !ctx) return
+      // object-cover: центрированный квадратный кроп исходника.
+      const side = Math.min(img.naturalWidth, img.naturalHeight)
+      if (side === 0) { setFailed(true); return }
+      const sx = (img.naturalWidth - side) / 2
+      const sy = (img.naturalHeight - side) / 2
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(img, sx, sy, side, side, 0, 0, canvas.width, canvas.height)
+    }
+    img.onerror = () => { if (!cancelled) setFailed(true) }
+    img.src = src
+    return () => { cancelled = true }
+    // size: смена размера пересоздаёт canvas-буфер пустым — кадр нужно перерисовать.
+  }, [src, size])
+
+  if (failed) {
+    return (
+      <img
+        src={src}
+        alt=""
+        className="w-full h-full rounded-full object-cover"
+        style={{ boxShadow: ringShadow }}
+      />
+    )
+  }
+  // ×2 к CSS-размеру — чтобы кадр не мылился на hi-dpi.
+  const px = Math.max(2, Math.round(size * 2))
+  return (
+    <canvas
+      ref={canvasRef}
+      width={px}
+      height={px}
+      className="w-full h-full rounded-full"
+      style={{ boxShadow: ringShadow }}
+    />
+  )
 }
 
 function initialsOf(name: string): string {
@@ -27,9 +87,15 @@ interface AvatarProps {
   ringColor?: string
   /** Цвет кольца выделения вокруг аватара (speaking/active), как в common.jsx. */
   ring?: string
+  /**
+   * Проигрывать GIF-аватар. По умолчанию GIF показывается статичным первым
+   * кадром; в войсе тайл передаёт speaking — аватар «оживает», пока человек
+   * говорит. На не-GIF аватары флаг не влияет.
+   */
+  animate?: boolean
 }
 
-export function Avatar({ name, avatarUrl, size = 32, status, className, ringColor, ring }: AvatarProps) {
+export function Avatar({ name, avatarUrl, size = 32, status, className, ringColor, ring, animate }: AvatarProps) {
   const color = useMemo(() => pickAvatarColor(name), [name])
   const initials = useMemo(() => initialsOf(name), [name])
   // Компактная статус-точка с тонкой обводкой под цвет фона
@@ -45,12 +111,16 @@ export function Avatar({ name, avatarUrl, size = 32, status, className, ringColo
       style={{ width: size, height: size }}
     >
       {avatarUrl ? (
-        <img
-          src={avatarUrl}
-          alt=""
-          className="w-full h-full rounded-full object-cover"
-          style={{ boxShadow: ringShadow }}
-        />
+        isGifUrl(avatarUrl) && !animate ? (
+          <GifPoster src={avatarUrl} size={size} ringShadow={ringShadow} />
+        ) : (
+          <img
+            src={avatarUrl}
+            alt=""
+            className="w-full h-full rounded-full object-cover"
+            style={{ boxShadow: ringShadow }}
+          />
+        )
       ) : (
         <div
           className="w-full h-full rounded-full flex items-center justify-center text-kd-stage-text font-semibold select-none"

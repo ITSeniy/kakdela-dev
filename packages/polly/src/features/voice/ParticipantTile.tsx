@@ -94,6 +94,7 @@ export function ParticipantTile({
           name={displayName}
           avatarUrl={avatarUrl ?? null}
           size={avatarSize}
+          animate={speaking}
         />
       )}
       <div className={`absolute left-1.5 bottom-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded font-mono bg-kd-overlay-strong text-kd-stage-text ${compact ? 'max-w-[85%]' : ''}`}>

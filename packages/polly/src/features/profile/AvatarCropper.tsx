@@ -16,6 +16,12 @@ export interface AvatarCropperProps {
   outputHeight?: number
   /** Круглая рамка превью (аватар). Для баннера — false. */
   round?: boolean
+  /**
+   * Принимать анимированные GIF. Кроп через canvas убил бы анимацию,
+   * поэтому GIF уходит в onConfirm как есть, без обрезки — превью
+   * показывается анимированным, слайдер и drag выключены.
+   */
+  allowGif?: boolean
 }
 
 interface ImageState {
@@ -47,7 +53,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
  */
 export function AvatarCropper({
   initialUrl, onConfirm, onCancel,
-  outputWidth = 256, outputHeight = 256, round = true,
+  outputWidth = 256, outputHeight = 256, round = true, allowGif = false,
 }: AvatarCropperProps) {
   // Превью повторяет пропорции выхода; для квадрата держим привычные 240.
   const previewW = outputWidth === outputHeight ? 240 : PREVIEW_MAX_W
@@ -55,8 +61,14 @@ export function AvatarCropper({
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [state, setState] = useState<ImageState | null>(null)
+  // Выбранный GIF (обходит кроп); URL живёт до замены файла или unmount.
+  const [gif, setGif] = useState<{ file: File; url: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const dragRef = useRef<{ startX: number; startY: number; dx0: number; dy0: number } | null>(null)
+
+  useEffect(() => {
+    return () => { if (gif) URL.revokeObjectURL(gif.url) }
+  }, [gif])
 
   const draw = useCallback((s: ImageState) => {
     const canvas = canvasRef.current
@@ -98,14 +110,20 @@ export function AvatarCropper({
 
   async function loadFile(file: File) {
     setError(null)
-    if (!ACCEPTED_MIME.includes(file.type)) {
-      setError('поддерживаются jpeg / png / webp')
+    if (!ACCEPTED_MIME.includes(file.type) && !(allowGif && file.type === 'image/gif')) {
+      setError(allowGif ? 'поддерживаются jpeg / png / webp / gif' : 'поддерживаются jpeg / png / webp')
       return
     }
     if (file.size > MAX_INPUT_BYTES) {
       setError('файл больше 10 МБ — выберите поменьше')
       return
     }
+    if (allowGif && file.type === 'image/gif') {
+      setGif({ file, url: URL.createObjectURL(file) })
+      setState(null)
+      return
+    }
+    setGif(null)
     const url = URL.createObjectURL(file)
     try {
       const img = await loadImage(url)
@@ -156,6 +174,10 @@ export function AvatarCropper({
   }
 
   async function confirm() {
+    if (gif) {
+      onConfirm(gif.file)
+      return
+    }
     if (!state) return
     // Рендерим кроп в офскрин-канвас итогового размера.
     const out = document.createElement('canvas')
@@ -182,7 +204,7 @@ export function AvatarCropper({
     onConfirm(blob)
   }
 
-  const hasImage = state !== null
+  const hasImage = state !== null || gif !== null
   const maxZoom = state ? state.minZoom * 4 : 1
   return (
     <div className="space-y-3">
@@ -191,6 +213,21 @@ export function AvatarCropper({
         onDrop={onDrop}
         className="relative w-full flex flex-col items-center gap-2"
       >
+        {gif ? (
+          <>
+            <img
+              src={gif.url}
+              alt=""
+              draggable={false}
+              className={`bg-kd-bg-deep border border-kd-border object-cover ${round ? 'rounded-full' : 'rounded-kd'}`}
+              style={{ width: previewW, height: previewH }}
+            />
+            <div className="text-[10px] text-kd-text-mute font-mono text-center">
+              gif загрузится как есть, без обрезки · в войсе оживает, когда говоришь
+            </div>
+          </>
+        ) : (
+        <>
         <div className="relative" style={{ width: previewW, height: previewH }}>
           <canvas
             ref={canvasRef}
@@ -249,6 +286,8 @@ export function AvatarCropper({
             className="w-full max-w-[280px]"
           />
         )}
+        </>
+        )}
       </div>
 
       {error && (
@@ -259,7 +298,7 @@ export function AvatarCropper({
         <label className="text-[11px] font-mono text-kd-accent hover:text-kd-accent-deep cursor-pointer">
           <input
             type="file"
-            accept={ACCEPTED_MIME.join(',')}
+            accept={[...ACCEPTED_MIME, ...(allowGif ? ['image/gif'] : [])].join(',')}
             onChange={onPickerChange}
             className="hidden"
           />
@@ -284,7 +323,7 @@ export function AvatarCropper({
         </div>
       </div>
       <div className="text-[10px] text-kd-text-mute font-mono">
-        jpeg / png / webp · до 10 МБ · авто-кроп до {outputWidth}×{outputHeight}
+        {allowGif ? 'jpeg / png / webp / gif' : 'jpeg / png / webp'} · до 10 МБ · авто-кроп до {outputWidth}×{outputHeight}
       </div>
     </div>
   )
