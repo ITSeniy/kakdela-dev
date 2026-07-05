@@ -7,9 +7,11 @@ import type {
   InvitePublic,
   InviteSummary,
   InvitesListResponse,
+  MemberProfileResponse,
   MemberPublic,
   ServerUnreadResponse,
   PatchChannelRequest,
+  PatchMemberProfileRequest,
   PatchServerRequest,
   Server,
 } from '@kakdela/ginzu/api-types'
@@ -91,6 +93,17 @@ export async function deleteChannel(channelId: string): Promise<void> {
 
 export async function getChannelStats(channelId: string): Promise<{ messageCount: number }> {
   return apiFetch<{ messageCount: number }>(`/api/channels/${channelId}/stats`)
+}
+
+/** Серверный профиль: свой per-server ник/аватар. null = сброс к глобальному. */
+export async function patchMyMemberProfile(
+  serverId: string,
+  body: PatchMemberProfileRequest,
+): Promise<MemberProfileResponse> {
+  return apiFetch<MemberProfileResponse>(`/api/servers/${serverId}/members/me`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
 }
 
 export async function leaveServer(serverId: string): Promise<void> {

@@ -388,10 +388,13 @@ export function VoiceScreen({ serverId, channel }: VoiceScreenProps) {
     // Self всегда первый — пользователю важно видеть, что он в эфире.
     // Своё кольцо — ТОЛЬКО локальный измеритель: серверный сигнал (плюс наш
     // 500мс-дебаунс) гаснет на секунды позже и кольцо «залипало».
+    // Имя/аватар — из members (серверный профиль, T-107), auth store — только
+    // фолбэк: там глобальный профиль без учёта ника на этом сервере.
+    const meMember = memberMap.get(me.id)
     pushBoth({
       userId: me.id,
-      displayName: me.displayName,
-      avatarUrl: me.avatarUrl ?? null,
+      displayName: meMember?.displayName ?? me.displayName,
+      avatarUrl: meMember?.avatarUrl ?? me.avatarUrl ?? null,
       muted,
       speaking: selfSpeaking,
       isSelf: true,
@@ -405,7 +408,9 @@ export function VoiceScreen({ serverId, channel }: VoiceScreenProps) {
       const member = memberMap.get(p.userId)
       pushBoth({
         userId: p.userId,
-        displayName: p.displayName || member?.displayName || 'участник',
+        // members первичны: LiveKit-имя — снимок на момент джойна и протухает,
+        // если участник сменил серверный профиль посреди звонка.
+        displayName: member?.displayName || p.displayName || 'участник',
         avatarUrl: member?.avatarUrl ?? null,
         muted: p.isMuted,
         speaking: activeSpeakers.has(p.userId),

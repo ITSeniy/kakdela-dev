@@ -57,12 +57,18 @@ async function resolveReplies(ids: string[]): Promise<Map<string, ReplyRef>> {
   const rows = await db
     .select({
       id:          messages.id,
-      displayName: users.displayName,
+      // Серверный ник автора поверх глобального имени (в DM join пустой).
+      displayName: sql<string>`COALESCE(${serverMembers.nickname}, ${users.displayName})`,
       content:     messages.content,
       deletedAt:   messages.deletedAt,
     })
     .from(messages)
     .innerJoin(users, eq(messages.authorId, users.id))
+    .leftJoin(channels, eq(messages.channelId, channels.id))
+    .leftJoin(serverMembers, and(
+      eq(serverMembers.serverId, channels.serverId),
+      eq(serverMembers.userId, messages.authorId),
+    ))
     .where(inArray(messages.id, ids))
   for (const r of rows) {
     map.set(r.id, r.deletedAt !== null
@@ -156,6 +162,7 @@ async function buildMentionContext(
       id:          users.id,
       displayName: users.displayName,
       username:    users.username,
+      nickname:    serverMembers.nickname,
       role:        serverMembers.role,
     })
     .from(serverMembers)
@@ -187,7 +194,9 @@ async function buildMentionContext(
     .where(and(eq(serverRoles.serverId, ch.serverId), eq(serverRoles.isEveryone, false)))
 
   return {
-    candidates: memberRows.map((m) => ({ id: m.id, displayName: m.displayName, username: m.username })),
+    // displayName кандидата — эффективное имя (серверный ник поверх
+    // глобального): в чате все видят и пишут `@ник`, он и должен резолвиться.
+    candidates: memberRows.map((m) => ({ id: m.id, displayName: m.nickname ?? m.displayName, username: m.username })),
     allowBroadcast,
     onlineIds,
     roleCandidates: roleRows,

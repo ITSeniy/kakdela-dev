@@ -9,7 +9,9 @@ import {
   CreateChannelRequestSchema,
   CreateServerRequestSchema,
   ErrorBodySchema,
+  MemberProfileResponseSchema,
   MemberPublicSchema,
+  PatchMemberProfileRequestSchema,
   PatchServerRequestSchema,
   ServerDetailSchema,
   ServerSchema,
@@ -216,6 +218,8 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
           status: users.status,
           customStatus: users.customStatus,
           role: serverMembers.role,
+          nickname: serverMembers.nickname,
+          serverAvatarUrl: serverMembers.avatarUrl,
         })
         .from(serverMembers)
         .innerJoin(users, eq(serverMembers.userId, users.id))
@@ -228,8 +232,12 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
       const builtinRoles = new Map(rows.map((r) => [r.id, r.role]))
       const roleInfo = await loadMemberRoleInfo(serverId, builtinRoles)
 
+      // displayName/avatarUrl — ЭФФЕКТИВНЫЕ (серверный профиль поверх
+      // глобального); сырые override'ы едут отдельными полями для UI.
       const enriched = rows.map((r) => ({
         ...r,
+        displayName: r.nickname ?? r.displayName,
+        avatarUrl: r.serverAvatarUrl ?? r.avatarUrl,
         status: presenceMap.get(r.id)?.status ?? r.status,
         roles: roleInfo.get(r.id)?.roles ?? [],
         permissions: roleInfo.get(r.id)?.permissions ?? 0,
@@ -509,6 +517,60 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
 
       // audit_log тоже каскадно удалится — отдельный entry уже не нужен.
       return reply.code(204).send(null)
+    },
+  )
+
+  // ───── PATCH /api/servers/:serverId/members/me — серверный профиль ─────
+  //
+  // Per-server ник и аватар (как в Discord). Только своё; null = сброс к
+  // глобальному значению. Broadcast member.profile — у всех участников
+  // сервера инвалидируется members-кэш.
+  app.patch(
+    '/servers/:serverId/members/me',
+    {
+      preHandler: app.authenticate,
+      schema: {
+        params: z.object({ serverId: z.string().uuid() }),
+        body: PatchMemberProfileRequestSchema,
+        response: {
+          200: MemberProfileResponseSchema,
+          401: ErrorBodySchema,
+          403: ErrorBodySchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const { serverId } = req.params
+      const userId = req.authUser!.id
+
+      await assertMember(userId, serverId)
+
+      const updates: Partial<typeof serverMembers.$inferInsert> = {}
+      if (req.body.nickname !== undefined)  updates.nickname  = req.body.nickname
+      if (req.body.avatarUrl !== undefined) updates.avatarUrl = req.body.avatarUrl
+
+      await db
+        .update(serverMembers)
+        .set(updates)
+        .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.userId, userId)))
+
+      const freshRows = await db
+        .select({ nickname: serverMembers.nickname, avatarUrl: serverMembers.avatarUrl })
+        .from(serverMembers)
+        .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.userId, userId)))
+        .limit(1)
+      const fresh = freshRows[0]
+      if (!fresh) throw forbidden('membership disappeared during update')
+
+      void broadcastToServer(serverId, {
+        t: 'member.profile',
+        serverId,
+        userId,
+        nickname: fresh.nickname,
+        avatarUrl: fresh.avatarUrl,
+      })
+
+      return reply.code(200).send({ nickname: fresh.nickname, avatarUrl: fresh.avatarUrl })
     },
   )
 

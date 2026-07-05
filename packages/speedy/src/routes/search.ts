@@ -8,7 +8,7 @@ import {
   type SearchResultItem,
 } from '@kakdela/ginzu/api-types'
 
-import { channels, messages, servers, users } from '../db/schema.js'
+import { channels, messages, serverMembers, servers, users } from '../db/schema.js'
 import { db } from '../lib/db.js'
 import { assertCanAccessChannel } from '../lib/permissions.js'
 
@@ -119,13 +119,18 @@ export const searchRoutes: FastifyPluginAsyncZod = async (app) => {
           channelKind:     channels.kind,
           serverId:        channels.serverId,
           serverName:      servers.name,
-          authorName:      users.displayName,
-          authorAvatarUrl: users.avatarUrl,
+          // Серверный профиль автора поверх глобального (в DM join пустой).
+          authorName:      sql<string>`COALESCE(${serverMembers.nickname}, ${users.displayName})`,
+          authorAvatarUrl: sql<string | null>`COALESCE(${serverMembers.avatarUrl}, ${users.avatarUrl})`,
         })
         .from(messages)
         .innerJoin(channels, eq(messages.channelId, channels.id))
         .leftJoin(servers, eq(channels.serverId, servers.id))
         .innerJoin(users, eq(messages.authorId, users.id))
+        .leftJoin(serverMembers, and(
+          eq(serverMembers.serverId, channels.serverId),
+          eq(serverMembers.userId, messages.authorId),
+        ))
         .where(and(...conditions))
         .orderBy(...orderBy)
         .limit(limit)

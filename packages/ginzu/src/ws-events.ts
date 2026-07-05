@@ -31,6 +31,9 @@ export type ServerEvent =
   | { t: 'dm.call-decline'; channelId: string; fromUserId: string }
   | { t: 'mention'; messageId: string; channelId: string; mentionedUserId: string; mentionType: 'user' | 'everyone' | 'here' }
   | { t: 'user.update'; userId: string; displayName: string; avatarUrl: string | null; customStatus: string | null }
+  // Серверный профиль участника (per-server ник/аватар) изменился —
+  // клиент инвалидирует members этого сервера.
+  | { t: 'member.profile'; serverId: string; userId: string; nickname: string | null; avatarUrl: string | null }
   | { t: 'thread.new'; parentChannelId: string; parentMessageId: string; threadChannelId: string; name: string }
   | { t: 'thread.archive'; parentChannelId: string; threadChannelId: string; archivedAt: string }
   | { t: 'channel.create'; serverId: string; channel: Channel }
@@ -100,6 +103,13 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
     displayName: z.string(),
     avatarUrl: z.string().nullable(),
     customStatus: z.string().nullable(),
+  }),
+  z.object({
+    t: z.literal('member.profile'),
+    serverId: uuid,
+    userId: uuid,
+    nickname: z.string().nullable(),
+    avatarUrl: z.string().nullable(),
   }),
   z.object({
     t: z.literal('thread.new'),

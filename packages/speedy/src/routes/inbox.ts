@@ -9,7 +9,7 @@ import {
   type InboxMention,
 } from '@kakdela/ginzu/api-types'
 
-import { channels, mentions, messages, servers, users } from '../db/schema.js'
+import { channels, mentions, messages, serverMembers, servers, users } from '../db/schema.js'
 import { db } from '../lib/db.js'
 
 const PREVIEW_MAX = 240
@@ -62,13 +62,18 @@ export const inboxRoutes: FastifyPluginAsyncZod = async (app) => {
           channelName:      channels.name,
           channelKind:      channels.kind,
           serverId:         channels.serverId,
-          authorDisplay:    users.displayName,
-          authorAvatarUrl:  users.avatarUrl,
+          // Серверный профиль автора поверх глобального (в DM join пустой).
+          authorDisplay:    sql<string>`COALESCE(${serverMembers.nickname}, ${users.displayName})`,
+          authorAvatarUrl:  sql<string | null>`COALESCE(${serverMembers.avatarUrl}, ${users.avatarUrl})`,
         })
         .from(mentions)
         .innerJoin(messages, eq(mentions.messageId, messages.id))
         .innerJoin(channels, eq(messages.channelId, channels.id))
         .innerJoin(users, eq(messages.authorId, users.id))
+        .leftJoin(serverMembers, and(
+          eq(serverMembers.serverId, channels.serverId),
+          eq(serverMembers.userId, messages.authorId),
+        ))
         .where(and(...conditions))
         .orderBy(desc(messages.id))
         .limit(limit + 1)
