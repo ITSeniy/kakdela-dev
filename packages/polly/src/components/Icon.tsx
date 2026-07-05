@@ -94,6 +94,13 @@ export const Icon = {
       <line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
     </>,
   ),
+  Image: makeIcon(
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <polyline points="21 15 16 10 5 21" />
+    </>,
+  ),
   Pin: makeIcon(
     <>
       <line x1="12" y1="17" x2="12" y2="22" />

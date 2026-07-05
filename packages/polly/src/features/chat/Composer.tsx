@@ -19,6 +19,8 @@ import {
   uploadAttachment,
   type FilePickerCategory,
 } from '../files/upload.js'
+import { type DeviceMediaItem, readMediaAsFile } from '../../lib/host/media.js'
+import { AttachSheet } from './AttachSheet.js'
 import { Attachments, type PendingAttachment } from './Attachments.js'
 import { CreateEventModal } from './CreateEventModal.js'
 import { CreatePollModal } from './CreatePollModal.js'
@@ -168,6 +170,8 @@ export function Composer({
   const [stickerOpen, setStickerOpen] = useState(false)
   const [pollOpen, setPollOpen] = useState(false)
   const [eventOpen, setEventOpen] = useState(false)
+  // Мобильный bottom-sheet вложений: «+» на мобиле открывает его, а не пикер.
+  const [attachOpen, setAttachOpen] = useState(false)
   // Всплывашка форматирования — пока в textarea есть выделение.
   const [hasSelection, setHasSelection] = useState(false)
   // @упоминание под курсором: позиция '@' и набранный кусок имени.
@@ -534,6 +538,22 @@ export function Composer({
     e.target.value = ''
   }
 
+  /** Выбор из галереи устройства (AttachSheet). Чтение файла — синхронный
+      вызов JS-моста, поэтому между файлами уступаем кадр. */
+  async function attachDeviceMedia(items: DeviceMediaItem[]) {
+    setAttachOpen(false)
+    const files: File[] = []
+    for (const item of items) {
+      try {
+        files.push(readMediaAsFile(item))
+      } catch (err) {
+        setWarning(`«${item.name}»: ${(err as Error).message}`)
+      }
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    if (files.length > 0) addFiles(files)
+  }
+
   function handleDragEnter(e: DragEvent) {
     if (!e.dataTransfer.types.includes('Files')) return
     e.preventDefault()
@@ -730,11 +750,11 @@ export function Composer({
         )}
         <button
           type="button"
-          onClick={pickFiles}
-          title="прикрепить файл"
+          onClick={() => (isMobile ? setAttachOpen(true) : void pickFiles())}
+          title="прикрепить"
           className="text-kd-text-mute hover:text-kd-text-soft transition-colors shrink-0"
         >
-          <Icon.Plus size={15} />
+          <Icon.Plus size={isMobile ? 20 : 15} />
         </button>
         {/* Автокомплит @упоминаний — над полем, выше панели форматирования. */}
         {mention && mentionOptions.length > 0 && (
@@ -792,7 +812,7 @@ export function Composer({
         />
         <div className="flex items-center gap-2 text-kd-text-mute shrink-0">
           {!isMobile && <span className="flex items-center h-5 text-[10px] font-mono opacity-70 select-none">md</span>}
-          {gifEnabled && (
+          {gifEnabled && !isMobile && (
             <div className="relative" ref={gifContainerRef}>
               <button
                 type="button"
@@ -811,6 +831,7 @@ export function Composer({
               )}
             </div>
           )}
+          {!isMobile && (
           <div className="relative" ref={stickerContainerRef}>
             <button
               type="button"
@@ -828,7 +849,8 @@ export function Composer({
               </div>
             )}
           </div>
-          {channelId && (
+          )}
+          {channelId && !isMobile && (
             <>
               <button
                 type="button"
@@ -906,6 +928,22 @@ export function Composer({
         )}
       </div>
       )}
+      {/* Мобильные GIF/стикер-пикеры: кнопки живут в AttachSheet, поэтому
+          попап якорим на весь композер, а не на кнопку. */}
+      {isMobile && gifOpen && (
+        <div ref={gifContainerRef} className="absolute bottom-full left-2 right-2 mb-2 z-50 flex justify-center">
+          <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
+            <LazyGifPicker onSelect={sendGif} />
+          </Suspense>
+        </div>
+      )}
+      {isMobile && stickerOpen && (
+        <div ref={stickerContainerRef} className="absolute bottom-full left-2 right-2 mb-2 z-50 flex justify-center">
+          <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
+            <LazyStickerPicker onSelect={sendSticker} />
+          </Suspense>
+        </div>
+      )}
       <div className="mt-1.5 px-1 text-[10px] text-kd-text-mute flex items-center gap-2.5 empty:hidden">
         {channelId
           ? <TypingLine channelId={channelId} memberMap={memberMap} mobile={isMobile} />
@@ -917,6 +955,20 @@ export function Composer({
           </>
         )}
       </div>
+      {attachOpen && (
+        <AttachSheet
+          gifEnabled={gifEnabled}
+          showPollEvent={Boolean(channelId)}
+          maxSelect={Math.max(0, MAX_ATTACHMENTS - attachments.length)}
+          onClose={() => setAttachOpen(false)}
+          onPickMedia={(items) => void attachDeviceMedia(items)}
+          onPickFile={() => { setAttachOpen(false); void pickFiles() }}
+          onGif={() => { setAttachOpen(false); setGifOpen(true) }}
+          onSticker={() => { setAttachOpen(false); setStickerOpen(true) }}
+          onPoll={() => { setAttachOpen(false); setPollOpen(true) }}
+          onEvent={() => { setAttachOpen(false); setEventOpen(true) }}
+        />
+      )}
       {pollOpen && channelId && (
         <CreatePollModal channelId={channelId} onClose={() => setPollOpen(false)} />
       )}
