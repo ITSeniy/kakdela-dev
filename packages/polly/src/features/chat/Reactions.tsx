@@ -1,6 +1,8 @@
-import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import React, { Suspense, useMemo, useRef, useState } from 'react'
 
 import type { CustomEmoji, MemberPublic, ReactionAggregate } from '@kakdela/ginzu/api-types'
+
+import { Popover } from '../../components/Popover.js'
 
 const LazyEmojiPicker = React.lazy(() => import('./EmojiPicker.js'))
 
@@ -11,6 +13,12 @@ interface ReactionsProps {
   memberMap: ReadonlyMap<string, MemberPublic>
   /** Карта custom emoji сервера — `:name:` в реакции рендерится картинкой. */
   emojiMap?: ReadonlyMap<string, CustomEmoji>
+  /**
+   * «+» перед пилюлями, а не после — для правовыровненных своих сообщений в DM:
+   * невидимый (opacity-0) плюс всегда занимает место, и в хвосте ряда он
+   * сдвигал пилюли от правого края пузыря.
+   */
+  plusFirst?: boolean
   onAdd: (messageId: string, emoji: string) => void
   onRemove: (messageId: string, emoji: string) => void
 }
@@ -60,43 +68,51 @@ function ReactionPill({
   )
 }
 
-export function Reactions({ messageId, reactions, currentUserId, memberMap, emojiMap, onAdd, onRemove }: ReactionsProps) {
+export function Reactions({ messageId, reactions, currentUserId, memberMap, emojiMap, plusFirst = false, onAdd, onRemove }: ReactionsProps) {
   const [pickerOpen, setPickerOpen] = useState(false)
-  // Вверх по умолчанию; у верха экрана места под picker (~435px) нет — вниз.
-  const [pickerUp, setPickerUp] = useState(true)
-  const pickerContainerRef = useRef<HTMLDivElement>(null)
-
-  function togglePicker() {
-    if (!pickerOpen) {
-      const top = pickerContainerRef.current?.getBoundingClientRect().top ?? 0
-      setPickerUp(top > 450)
-    }
-    setPickerOpen((o) => !o)
-  }
+  const plusRef = useRef<HTMLButtonElement>(null)
 
   const customList = useMemo(
     () => (emojiMap && emojiMap.size > 0 ? [...emojiMap.values()] : undefined),
     [emojiMap],
   )
 
-  useEffect(() => {
-    if (!pickerOpen) return
-    function handleMouseDown(e: MouseEvent) {
-      if (pickerContainerRef.current && !pickerContainerRef.current.contains(e.target as Node)) {
-        setPickerOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleMouseDown)
-    return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [pickerOpen])
-
   // Нет реакций — не занимаем вертикальное место под каждым сообщением
   // («длинные» промежутки в ленте). Добавить первую реакцию можно из
   // hover-кластера (десктоп) и контекст-меню (right-click / long-press).
   if (reactions.length === 0) return null
 
+  const plusEl = (
+    <>
+      <button
+        ref={plusRef}
+        type="button"
+        onClick={() => setPickerOpen((o) => !o)}
+        className={`${pickerOpen ? 'opacity-100' : 'opacity-0'} group-hover:opacity-100 transition-opacity flex items-center px-1.5 py-px rounded text-[11px] border border-dashed border-kd-border text-kd-text-mute hover:border-kd-accent-soft hover:text-kd-text-soft`}
+        title="добавить реакцию"
+      >
+        +
+      </button>
+
+      {pickerOpen && plusRef.current && (
+        <Popover anchor={plusRef.current} align="start" onClose={() => setPickerOpen(false)}>
+          <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
+            <LazyEmojiPicker
+              customEmoji={customList}
+              onSelect={(emoji) => {
+                onAdd(messageId, emoji)
+                setPickerOpen(false)
+              }}
+            />
+          </Suspense>
+        </Popover>
+      )}
+    </>
+  )
+
   return (
     <div className="mt-1 flex flex-wrap gap-1 items-center">
+      {plusFirst && plusEl}
       {reactions.map((r) => {
         const mine = currentUserId !== null && r.users.includes(currentUserId)
         const names = r.users.map((uid) => memberMap.get(uid)?.displayName ?? '?')
@@ -112,31 +128,7 @@ export function Reactions({ messageId, reactions, currentUserId, memberMap, emoj
           />
         )
       })}
-
-      <div className="relative" ref={pickerContainerRef}>
-        <button
-          type="button"
-          onClick={togglePicker}
-          className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center px-1.5 py-px rounded text-[11px] border border-dashed border-kd-border text-kd-text-mute hover:border-kd-accent-soft hover:text-kd-text-soft"
-          title="добавить реакцию"
-        >
-          +
-        </button>
-
-        {pickerOpen && (
-          <div className={`absolute ${pickerUp ? 'bottom-full mb-1' : 'top-full mt-1'} left-0 z-50 shadow-lg`}>
-            <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
-              <LazyEmojiPicker
-                customEmoji={customList}
-                onSelect={(emoji) => {
-                  onAdd(messageId, emoji)
-                  setPickerOpen(false)
-                }}
-              />
-            </Suspense>
-          </div>
-        )}
-      </div>
+      {!plusFirst && plusEl}
     </div>
   )
 }

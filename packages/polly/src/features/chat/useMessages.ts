@@ -102,6 +102,11 @@ export function useMessages(channelId: string | null) {
               if (m.id !== event.messageId) return m
               const cur = m.reactions ?? []
               const existing = cur.find((r) => r.emoji === event.emoji)
+              // Идемпотентно: useMessages с одним queryKey монтируется в
+              // нескольких компонентах (DmScreen + DmBubbleList), и каждый
+              // экземпляр применяет событие к общему кэшу — повторное
+              // применение не должно дублировать реакцию.
+              if (existing?.users.includes(event.userId)) return m
               if (existing) {
                 return {
                   ...m,
@@ -127,12 +132,16 @@ export function useMessages(channelId: string | null) {
             messages: page.messages.map((m) => {
               if (m.id !== event.messageId) return m
               const cur = m.reactions ?? []
+              // Идемпотентно (см. reaction.add): второй экземпляр обработчика
+              // не должен списать реакцию ещё раз.
+              const existing = cur.find((r) => r.emoji === event.emoji)
+              if (!existing || !existing.users.includes(event.userId)) return m
               const reactions = cur
                 .map((r) => {
                   if (r.emoji !== event.emoji) return r
-                  const newCount = r.count - 1
-                  if (newCount <= 0) return null
-                  return { ...r, count: newCount, users: r.users.filter((u) => u !== event.userId) }
+                  const users = r.users.filter((u) => u !== event.userId)
+                  if (users.length === 0) return null
+                  return { ...r, count: users.length, users }
                 })
                 .filter((r): r is NonNullable<typeof r> => r !== null)
               return { ...m, reactions }

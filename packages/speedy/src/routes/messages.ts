@@ -45,6 +45,7 @@ const MSG_COLS = {
   authorId:      messages.authorId,
   content:       messages.content,
   replyToId:     messages.replyToId,
+  clientNonce:   messages.clientNonce,
   createdAt:     messages.createdAt,
   editedAt:      messages.editedAt,
   pinnedAt:      messages.pinnedAt,
@@ -241,6 +242,7 @@ interface MsgRow {
   authorId: string
   content: string
   replyToId: string | null
+  clientNonce: string | null
   createdAt: Date
   editedAt: Date | null
   pinnedAt: Date | null
@@ -269,6 +271,8 @@ function serializeMessage(
     content:   row.content,
     replyToId: row.replyToId ?? null,
     replyTo,
+    // Нужен клиенту, чтобы схлопнуть pending-дубль (WS msg.new vs REST-ответ).
+    clientNonce: row.clientNonce ?? null,
     createdAt: row.createdAt.toISOString(),
     editedAt:  row.editedAt?.toISOString() ?? null,
     reactions,

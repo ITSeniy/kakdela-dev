@@ -185,6 +185,13 @@ export function Composer({
 
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // «Ответить» из ленты — сразу фокус в поле ввода: ответ почти всегда
+  // печатают немедленно, лишний клик по композеру раздражал.
+  useEffect(() => {
+    if (replyTo) taRef.current?.focus()
+  }, [replyTo?.id])
+
   const pickerContainerRef = useRef<HTMLDivElement>(null)
   const gifContainerRef = useRef<HTMLDivElement>(null)
   const stickerContainerRef = useRef<HTMLDivElement>(null)

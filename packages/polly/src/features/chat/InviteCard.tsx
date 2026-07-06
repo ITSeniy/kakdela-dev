@@ -12,6 +12,22 @@ import { acceptInvite, getInvitePublic, listServers } from '../servers/api.js'
 // /invite/<code> или ?invite=<code>; код — 6..12 символов из base32-алфавита.
 const INVITE_RE = /(?:\/invite\/|[?&]invite=)([a-z0-9]{6,12})/gi
 
+/** URL ведёт на приглашение — его OG-превью избыточно (карточка уже есть). */
+export function isInviteUrl(url: string): boolean {
+  INVITE_RE.lastIndex = 0
+  return INVITE_RE.test(url)
+}
+
+/**
+ * Сообщение состоит только из инвайт-ссылок (плюс пробелы): текст — «служебный»,
+ * его прячем и показываем одну карточку приглашения.
+ */
+export function isInviteOnlyContent(content: string): boolean {
+  if (extractInviteCodes(content).length === 0) return false
+  const rest = content.replace(/https?:\/\/\S+/gi, (url) => (isInviteUrl(url) ? '' : url))
+  return rest.trim() === ''
+}
+
 /** Уникальные коды инвайтов из текста (не больше 3 карточек на сообщение). */
 export function extractInviteCodes(content: string): string[] {
   const out: string[] = []

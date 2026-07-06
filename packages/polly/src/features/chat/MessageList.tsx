@@ -7,6 +7,7 @@ import { DayDivider } from '../../components/DayDivider.js'
 import { openExternal } from '../../lib/host/shell.js'
 import { GreetingBanner } from './GreetingBanner.js'
 import { Message } from './Message.js'
+import { chatScrollMemory } from './scrollMemory.js'
 import { useMessages } from './useMessages.js'
 import type { PendingMessage } from './types.js'
 
@@ -180,7 +181,11 @@ export function MessageList({
   function handleScroll() {
     const c = containerRef.current
     if (!c) return
-    stickToBottomRef.current = c.scrollHeight - c.scrollTop - c.clientHeight < 80
+    const stick = c.scrollHeight - c.scrollTop - c.clientHeight < 80
+    stickToBottomRef.current = stick
+    // Запоминаем «момент переписки»: вернувшись в канал, откроемся тут же.
+    if (stick) chatScrollMemory.delete(channelId)
+    else chatScrollMemory.set(channelId, c.scrollTop)
   }
 
   // Контент дорастает уже после рендера (картинки, custom emoji, превью) —
@@ -227,13 +232,30 @@ export function MessageList({
   // Auto-scroll on new content
   const lastId = messages[messages.length - 1]?.id ?? null
   const pendingCount = pending.length
+  const prevPendingCountRef = useRef(0)
 
   useEffect(() => {
     const container = containerRef.current
+    const pendingGrew = pendingCount > prevPendingCountRef.current
+    prevPendingCountRef.current = pendingCount
     if (!container) return
     if (!initialScrolledRef.current && messages.length > 0) {
-      container.scrollTop = container.scrollHeight
+      // Возврат в канал — продолжаем с запомненного места; иначе — в самый низ.
+      const saved = chatScrollMemory.get(channelId)
+      if (saved !== undefined) {
+        container.scrollTop = saved
+        stickToBottomRef.current = false
+      } else {
+        container.scrollTop = container.scrollHeight
+      }
       initialScrolledRef.current = true
+      return
+    }
+    // Своя отправка тянет вниз из любой позиции (как в Discord/Telegram) —
+    // сообщение появляется у низа, оставаться наверху бессмысленно.
+    if (pendingGrew) {
+      stickToBottomRef.current = true
+      container.scrollTop = container.scrollHeight
       return
     }
     // Мгновенный прыжок вместо smooth: за время smooth-анимации позиция
@@ -241,7 +263,7 @@ export function MessageList({
     if (stickToBottomRef.current) {
       container.scrollTop = container.scrollHeight
     }
-  }, [lastId, pendingCount, messages.length])
+  }, [lastId, pendingCount, messages.length, channelId])
 
   useEffect(() => {
     initialScrolledRef.current = false
@@ -286,10 +308,27 @@ export function MessageList({
 
   const firstUnreadIndex = useMemo(() => {
     if (!snapshotReadAt) return -1
+    // Своя отправка «прочитывает» канал: как только в ленте (или в pending)
+    // появилось наше сообщение новее снимка — маркер убираем, иначе он
+    // оставался и подсвечивался при каждой следующей отправке.
+    if (pending.length > 0) return -1
+    if (currentUserId !== null
+      && messages.some((m) => m.authorId === currentUserId && m.createdAt > snapshotReadAt)) {
+      return -1
+    }
     return messages.findIndex((m) =>
       m.createdAt > snapshotReadAt && m.authorId !== currentUserId,
     )
-  }, [messages, snapshotReadAt, currentUserId])
+  }, [messages, snapshotReadAt, currentUserId, pending.length])
+
+  // Nonce'ы уже приземлившихся сообщений: pending-строку с таким nonce не
+  // рендерим — WS msg.new часто обгоняет REST-ответ, и своё сообщение на
+  // мгновение мигало дублем («телепорт» вниз).
+  const landedNonces = useMemo(() => {
+    const s = new Set<string>()
+    for (const m of messages) if (m.clientNonce) s.add(m.clientNonce)
+    return s
+  }, [messages])
 
   type ItemRow =
     | { type: 'day'; label: string }
@@ -303,27 +342,39 @@ export function MessageList({
       }
 
   const rows: ItemRow[] = []
+  // prevForMsg — только для day-разделителя; groupAnchor — «prev» для склейки.
+  // Системные строки, day-разделитель и «непрочитанное» склейку разрывают:
+  // иначе первое сообщение автора после его «присоединился к серверу»
+  // рендерилось без аватара и имени (system-сообщение несёт тот же authorId).
   let prevForMsg: IMessage | PendingMessage | null = null
+  let groupAnchor: IMessage | PendingMessage | null = null
   for (let i = 0; i < messages.length; i += 1) {
     const m = messages[i]!
     if (prevForMsg === null || !sameDay(prevForMsg.createdAt, m.createdAt)) {
       rows.push({ type: 'day', label: formatDay(m.createdAt) })
+      groupAnchor = null
     }
-    if (i === firstUnreadIndex) rows.push({ type: 'unread' })
+    if (i === firstUnreadIndex) {
+      rows.push({ type: 'unread' })
+      groupAnchor = null
+    }
     // Системное сообщение (вступление участника) — строка по центру, не «пузырь»
     // и не склеивается с соседями.
     if (m.system) {
       rows.push({ type: 'system', msg: m })
       prevForMsg = m
+      groupAnchor = null
       continue
     }
-    rows.push({ type: 'msg', msg: m, prev: prevForMsg, isPending: false })
+    rows.push({ type: 'msg', msg: m, prev: groupAnchor, isPending: false })
     prevForMsg = m
+    groupAnchor = m
   }
   for (let i = 0; i < pending.length; i += 1) {
     const p = pending[i]!
-    rows.push({ type: 'msg', msg: p, prev: prevForMsg, isPending: true })
-    prevForMsg = p
+    if (landedNonces.has(p._nonce)) continue
+    rows.push({ type: 'msg', msg: p, prev: groupAnchor, isPending: true })
+    groupAnchor = p
   }
 
   // Фокус на composer того же экрана (он — сосед скролл-контейнера

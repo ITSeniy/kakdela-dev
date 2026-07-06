@@ -22,15 +22,17 @@ import { EventCard } from '../chat/EventCard.js'
 import { ForwardedCard } from '../chat/ForwardedCard.js'
 import { PollCard } from '../chat/PollCard.js'
 import { addReminder } from '../reminders/store.js'
-import { InviteEmbeds } from '../chat/InviteCard.js'
+import { InviteEmbeds, isInviteOnlyContent } from '../chat/InviteCard.js'
 import { LinkPreviews } from '../chat/LinkPreviewCard.js'
 import { useForwardUi } from '../chat/forwardStore.js'
 import { Reactions } from '../chat/Reactions.js'
 import { renderMarkdown, renderMarkdownInline } from '../chat/markdown.js'
+import { chatScrollMemory } from '../chat/scrollMemory.js'
 import { useMessages } from '../chat/useMessages.js'
 import type { PendingMessage } from '../chat/types.js'
 import { useAllServerEmoji } from '../emoji/api.js'
 import { useIsMobile } from '../../app/useIsMobile.js'
+import { Popover } from '../../components/Popover.js'
 
 interface DmBubbleListProps {
   channelId: string
@@ -84,34 +86,32 @@ const LazyEmojiPicker = lazy(() => import('../chat/EmojiPicker.js'))
 // Вынесена из общей ленты (Reactions сворачивается, когда реакций нет), чтобы
 // сообщения не занимали лишнюю высоту, но добавить реакцию по-прежнему легко.
 function ReactionAddButton({
-  emojiList, onPick,
+  emojiList, onPick, onOpenChange,
 }: {
   emojiList?: CustomEmoji[]
   onPick: (emoji: string) => void
+  /** Тулбар-родитель держит opacity-100, пока пикер открыт (пикер — портал, group-hover его не «видит»). */
+  onOpenChange?: (open: boolean) => void
 }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    function onDown(e: globalThis.MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [open])
+  const btnRef = useRef<HTMLButtonElement>(null)
+  function setOpenNotify(v: boolean) {
+    setOpen(v)
+    onOpenChange?.(v)
+  }
   return (
-    <div className="relative" ref={ref}>
-      <button type="button" onClick={() => setOpen((o) => !o)} title="реакция" className="hover:text-kd-text p-1 block">
+    <>
+      <button ref={btnRef} type="button" onClick={() => setOpenNotify(!open)} title="реакция" className="hover:text-kd-text p-1 block">
         <Icon.Smile size={13} />
       </button>
-      {open && (
-        <div className="absolute bottom-full right-0 mb-1 z-50 shadow-lg">
+      {open && btnRef.current && (
+        <Popover anchor={btnRef.current} onClose={() => setOpenNotify(false)}>
           <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
-            <LazyEmojiPicker customEmoji={emojiList} onSelect={(emoji) => { onPick(emoji); setOpen(false) }} />
+            <LazyEmojiPicker customEmoji={emojiList} onSelect={(emoji) => { onPick(emoji); setOpenNotify(false) }} />
           </Suspense>
-        </div>
+        </Popover>
       )}
-    </div>
+    </>
   )
 }
 
@@ -230,6 +230,9 @@ function DmBubble({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(message.content)
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  // Пикер реакций открыт — держим hover-кластер видимым: сам пикер рендерится
+  // порталом в body, и group-hover на него не распространяется.
+  const [reactionPickerOpen, setReactionPickerOpen] = useState(false)
   const openForward = useForwardUi((s) => s.open)
   const queryClient = useQueryClient()
   const isMobile = useIsMobile()
@@ -454,26 +457,61 @@ function DmBubble({
             )}
           </button>
         )}
-        {message.content && (
-          <div
-            className={[
-              `px-3 py-[7px] rounded-kd ${isMobile ? 'text-[14px]' : 'text-[13px]'} leading-[1.45] break-words max-w-full min-w-0`,
-              isOwn
-                ? 'bg-kd-accent text-white kd-on-accent'
-                : 'bg-kd-panel border border-kd-border text-kd-text',
-            ].join(' ')}
-          >
-            <div className="kd-md" dangerouslySetInnerHTML={{ __html: html }} />
-          </div>
-        )}
-        {forwardedEl}
-        <LinkPreviews previews={(message as IMessage).linkPreviews} />
-        <InviteEmbeds content={message.content} />
-        {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} />}
-        {msgGif && <GifEmbed gif={msgGif} />}
-        {msgSticker && <StickerEmbed sticker={msgSticker} />}
-        {msgPoll && <PollCard messageId={message.id} poll={msgPoll} />}
-        {msgEvent && <EventCard messageId={message.id} event={msgEvent} memberMap={memberMap} />}
+        {/* Обёртка контента (пузырь + медиа) — якорь hover-кластера: он центрируется
+            по самому сообщению, а не по всей колонке с меткой времени и реакциями
+            (self-center по колонке уводил кластер вниз у «хвостовых» сообщений). */}
+        <div className={`relative max-w-full min-w-0 flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+          {/* Медиа выше подписи (как в Telegram): фото/гифка/стикер — потом текст. */}
+          {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} />}
+          {msgGif && <GifEmbed gif={msgGif} />}
+          {msgSticker && <StickerEmbed sticker={msgSticker} />}
+          {/* Сообщение из одной инвайт-ссылки — «служебный» текст прячем,
+              смысл несёт карточка приглашения ниже. */}
+          {message.content && !isInviteOnlyContent(message.content) && (
+            <div
+              className={[
+                `px-3 py-[7px] rounded-kd ${isMobile ? 'text-[14px]' : 'text-[13px]'} leading-[1.45] break-words max-w-full min-w-0`,
+                isOwn
+                  ? 'bg-kd-accent text-white kd-on-accent'
+                  : 'bg-kd-panel border border-kd-border text-kd-text',
+              ].join(' ')}
+            >
+              <div className="kd-md" dangerouslySetInnerHTML={{ __html: html }} />
+            </div>
+          )}
+          {forwardedEl}
+          <LinkPreviews previews={(message as IMessage).linkPreviews} />
+          <InviteEmbeds content={message.content} />
+          {msgPoll && <PollCard messageId={message.id} poll={msgPoll} />}
+          {msgEvent && <EventCard messageId={message.id} event={msgEvent} memberMap={memberMap} />}
+          {/* z-20 обязателен: -translate-y-1/2 (transform) создаёт стековый
+              контекст и запирает в нём z-50 пикера, а relative-обёртки следующих
+              сообщений при z:auto рисовались бы поверх него (порядок DOM). */}
+          {!pendingStatus && !isMobile && (
+            <div
+              className={`absolute top-1/2 -translate-y-1/2 z-20 ${isOwn ? 'right-full mr-2' : 'left-full ml-2'} ${reactionPickerOpen ? 'opacity-100' : 'opacity-0'} group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5 px-0.5 py-0.5 bg-kd-panel border border-kd-border rounded-kd shadow-kd-tile text-kd-text-mute`}
+            >
+              <ReactionAddButton
+                emojiList={emojiMap && emojiMap.size > 0 ? [...emojiMap.values()] : undefined}
+                onPick={(emoji) => onAddReaction(message.id, emoji)}
+                onOpenChange={setReactionPickerOpen}
+              />
+              <button type="button" onClick={() => onReply(message as IMessage)} title="ответить" className="hover:text-kd-text p-1">
+                <Icon.Reply size={13} />
+              </button>
+              {isOwn && !editDisabled && (
+                <button type="button" onClick={() => setEditing(true)} title="изменить" className="hover:text-kd-text p-1">
+                  <Icon.Edit size={13} />
+                </button>
+              )}
+              {canDelete && (
+                <button type="button" onClick={() => onDelete(message.id)} title="удалить" className="hover:text-kd-danger p-1">
+                  <Icon.Trash size={13} />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         {showMeta && (
           <div className="flex items-center gap-1.5 mt-[2px] px-1 text-[10px] font-mono text-kd-text-mute">
             <span>{time}</span>
@@ -501,32 +539,13 @@ function DmBubble({
             reactions={messageReactions}
             currentUserId={currentUserId}
             memberMap={memberMap}
+            emojiMap={emojiMap}
+            plusFirst={isOwn}
             onAdd={onAddReaction}
             onRemove={onRemoveReaction}
           />
         )}
       </div>
-      {!pendingStatus && !isMobile && (
-        <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5 px-0.5 py-0.5 bg-kd-panel border border-kd-border rounded-kd shadow-kd-tile text-kd-text-mute self-center shrink-0">
-          <ReactionAddButton
-            emojiList={emojiMap && emojiMap.size > 0 ? [...emojiMap.values()] : undefined}
-            onPick={(emoji) => onAddReaction(message.id, emoji)}
-          />
-          <button type="button" onClick={() => onReply(message as IMessage)} title="ответить" className="hover:text-kd-text p-1">
-            <Icon.Reply size={13} />
-          </button>
-          {isOwn && !editDisabled && (
-            <button type="button" onClick={() => setEditing(true)} title="изменить" className="hover:text-kd-text p-1">
-              <Icon.Edit size={13} />
-            </button>
-          )}
-          {canDelete && (
-            <button type="button" onClick={() => onDelete(message.id)} title="удалить" className="hover:text-kd-danger p-1">
-              <Icon.Trash size={13} />
-            </button>
-          )}
-        </div>
-      )}
     </div>
   )
 }
@@ -570,9 +589,14 @@ export function DmBubbleList({
   }
 
   const containerRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const topRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const isAtBottomRef = useRef(true)
+  // «Прилипание» к низу считаем по scroll-позиции (запас 80px), а не по
+  // IntersectionObserver сентинела: при плавном скролле или пачке сообщений
+  // сентинел успевает уехать из вьюпорта, и автоскролл срывался (тот же фикс,
+  // что в chat/MessageList).
+  const stickToBottomRef = useRef(true)
   const prevScrollHeightRef = useRef<number | null>(null)
   const initialScrolledRef = useRef(false)
   // Снимок последнего id на момент первой загрузки — входом анимируем только
@@ -595,25 +619,47 @@ export function DmBubbleList({
     return result
   }, [data])
 
-  // Track at-bottom + update last-read marker
+  // Update last-read marker, когда низ списка реально виден
   useEffect(() => {
     const node = bottomRef.current
     const container = containerRef.current
     if (!node || !container) return
     const observer = new IntersectionObserver((entries) => {
       const entry = entries[0]
-      if (!entry) return
-      isAtBottomRef.current = entry.isIntersecting
-      if (entry.isIntersecting) {
-        const latest = messages[messages.length - 1]
-        if (latest) {
-          window.localStorage.setItem(`kd:read:${channelId}`, latest.createdAt)
-        }
+      if (!entry?.isIntersecting) return
+      const latest = messages[messages.length - 1]
+      if (latest) {
+        window.localStorage.setItem(`kd:read:${channelId}`, latest.createdAt)
       }
     }, { root: container, threshold: 0.1 })
     observer.observe(node)
     return () => observer.disconnect()
   }, [channelId, messages])
+
+  function handleScroll() {
+    const c = containerRef.current
+    if (!c) return
+    const stick = c.scrollHeight - c.scrollTop - c.clientHeight < 80
+    stickToBottomRef.current = stick
+    // Запоминаем «момент переписки»: вернувшись в чат, откроемся тут же.
+    if (stick) chatScrollMemory.delete(channelId)
+    else chatScrollMemory.set(channelId, c.scrollTop)
+  }
+
+  // Контент дорастает уже после рендера (картинки, GIF, превью ссылок) —
+  // ResizeObserver дожимает скролл вниз, пока юзер «прилип» к низу.
+  useEffect(() => {
+    const content = contentRef.current
+    const container = containerRef.current
+    if (!content || !container) return
+    const observer = new ResizeObserver(() => {
+      // Во время подгрузки старых страниц позицию восстанавливает другой эффект.
+      if (prevScrollHeightRef.current !== null) return
+      if (stickToBottomRef.current) container.scrollTop = container.scrollHeight
+    })
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [])
 
   // Fetch older when top sentinel hits
   useEffect(() => {
@@ -644,21 +690,41 @@ export function DmBubbleList({
   // Auto-scroll on new content
   const lastId = messages[messages.length - 1]?.id ?? null
   const pendingCount = pending.length
+  const prevPendingCountRef = useRef(0)
 
   useEffect(() => {
+    const container = containerRef.current
+    const pendingGrew = pendingCount > prevPendingCountRef.current
+    prevPendingCountRef.current = pendingCount
+    if (!container) return
     if (!initialScrolledRef.current && messages.length > 0) {
-      bottomRef.current?.scrollIntoView({ behavior: 'auto' })
+      // Возврат в переписку — продолжаем с запомненного места; иначе — вниз.
+      const saved = chatScrollMemory.get(channelId)
+      if (saved !== undefined) {
+        container.scrollTop = saved
+        stickToBottomRef.current = false
+      } else {
+        container.scrollTop = container.scrollHeight
+      }
       initialScrolledRef.current = true
       return
     }
-    if (isAtBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    // Своя отправка тянет вниз из любой позиции (как в Discord/Telegram).
+    if (pendingGrew) {
+      stickToBottomRef.current = true
+      container.scrollTop = container.scrollHeight
+      return
     }
-  }, [lastId, pendingCount, messages.length])
+    // Мгновенный прыжок вместо smooth: за время smooth-анимации позиция
+    // «не у низа» и следующее сообщение ломало прилипание.
+    if (stickToBottomRef.current) {
+      container.scrollTop = container.scrollHeight
+    }
+  }, [lastId, pendingCount, messages.length, channelId])
 
   useEffect(() => {
     initialScrolledRef.current = false
-    isAtBottomRef.current = true
+    stickToBottomRef.current = true
     sawInitialRef.current = false
     firstSeenMaxIdRef.current = null
   }, [channelId])
@@ -695,10 +761,25 @@ export function DmBubbleList({
 
   const firstUnreadIndex = useMemo(() => {
     if (!snapshotReadAt) return -1
+    // Своя отправка «прочитывает» чат — маркер «непрочитанное» убираем.
+    if (pending.length > 0) return -1
+    if (currentUserId !== null
+      && messages.some((m) => m.authorId === currentUserId && m.createdAt > snapshotReadAt)) {
+      return -1
+    }
     return messages.findIndex((m) =>
       m.createdAt > snapshotReadAt && m.authorId !== currentUserId,
     )
-  }, [messages, snapshotReadAt, currentUserId])
+  }, [messages, snapshotReadAt, currentUserId, pending.length])
+
+  // Nonce'ы уже приземлившихся сообщений: pending-строку с таким nonce не
+  // рендерим — WS msg.new часто обгоняет REST-ответ, и своё сообщение на
+  // мгновение мигало дублем («телепорт» вниз).
+  const landedNonces = useMemo(() => {
+    const s = new Set<string>()
+    for (const m of messages) if (m.clientNonce) s.add(m.clientNonce)
+    return s
+  }, [messages])
 
   type ItemRow =
     | { type: 'day'; label: string }
@@ -751,6 +832,7 @@ export function DmBubbleList({
   }
   for (let i = 0; i < pending.length; i += 1) {
     const p = pending[i]!
+    if (landedNonces.has(p._nonce)) continue
     const grouped =
       groupAnchor !== null
       && groupAnchor.authorId === p.authorId
@@ -772,7 +854,9 @@ export function DmBubbleList({
       ref={containerRef}
       className="flex-1 overflow-y-auto min-h-0 py-2"
       onClick={handleContentClick}
+      onScroll={handleScroll}
     >
+      <div ref={contentRef}>
       <div ref={topRef} className="h-1" />
       {isFetchingNextPage && (
         <div className="text-center py-2 text-[10px] text-kd-text-mute font-mono">
@@ -841,6 +925,7 @@ export function DmBubbleList({
         )
       })}
       <div ref={bottomRef} className="h-1" />
+      </div>
     </div>
   )
 }

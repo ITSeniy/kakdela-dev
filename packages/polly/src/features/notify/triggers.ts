@@ -313,6 +313,9 @@ export function useNotifyTriggers(): void {
 
       if (event.t === 'dm.new') {
         void queryClient.invalidateQueries({ queryKey: ['dm-list'] })
+        // «Заметки себе»: диалог с самим собой создаёт dm.new, где инициатор —
+        // мы же. Уведомлять «кто-то начал с вами личный диалог» не о чем.
+        if (event.withUserId === currentUserId) return
         if (!useNotifyPrefs.getState().dms) return
         if (!shouldNotify(event.channelId, uiRef.current, focusedRef.current)) return
         playNotifySound()

@@ -10,6 +10,7 @@ import { useState } from 'react'
 import type { LinkPreview } from '@kakdela/ginzu/api-types'
 
 import { openExternal } from '../../lib/host/shell.js'
+import { isInviteUrl } from './InviteCard.js'
 
 const MAX_CARDS = 3
 
@@ -130,9 +131,13 @@ function Card({ preview }: { preview: LinkPreview }) {
 
 export function LinkPreviews({ previews }: { previews: LinkPreview[] | undefined }) {
   if (!previews || previews.length === 0) return null
+  // Инвайт-ссылки уже показаны карточкой приглашения (InviteEmbeds) —
+  // OG-превью для них дублирует информацию и только шумит.
+  const shown = previews.filter((p) => !isInviteUrl(p.url))
+  if (shown.length === 0) return null
   return (
     <div className="flex flex-col items-start min-w-0">
-      {previews.slice(0, MAX_CARDS).map((p, i) => (
+      {shown.slice(0, MAX_CARDS).map((p, i) => (
         <Card key={`${p.url}-${i}`} preview={p} />
       ))}
     </div>

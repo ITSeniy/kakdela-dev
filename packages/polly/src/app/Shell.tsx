@@ -10,6 +10,7 @@ import { DmHome } from '../features/dm/DmHome.js'
 import { DmList } from '../features/dm/DmList.js'
 import { DmOpener } from '../features/dm/DmOpener.js'
 import { DmScreen } from '../features/dm/DmScreen.js'
+import { listDms } from '../features/dm/api.js'
 import { InboxScreen } from '../features/inbox/InboxScreen.js'
 import { MemberList } from '../features/members/MemberList.js'
 import { useRecents } from '../features/navigation/recents.js'
@@ -32,6 +33,10 @@ import { useVoicePingSampler } from '../features/voice/pingStats.js'
 import { usePushToTalk } from '../features/voice/usePushToTalk.js'
 
 const LAST_CHANNEL_KEY = 'kd:last-channel'
+// Память «где я был»: последний открытый канал на КАЖДОМ сервере и последняя
+// переписка в личке — клик по рельсе возвращает в тот же чат, а не в дефолтный.
+const LAST_SERVER_CHANNEL_PREFIX = 'kd:last-channel:'
+const LAST_DM_KEY = 'kd:last-dm'
 
 export function Shell() {
   usePushToTalk()
@@ -110,23 +115,48 @@ export function Shell() {
     navigate('/welcome', { replace: true })
   }, [location, servers, navigate])
 
-  // /servers/:id (no channel) → first text channel.
+  // /servers/:id (no channel) → канал, где были в прошлый раз, иначе дефолтный.
   useEffect(() => {
     if (!serverParams || channelParams) return
     if (!serverDetail) return
+    const lastId = localStorage.getItem(LAST_SERVER_CHANNEL_PREFIX + serverDetail.server.id)
+    // Восстанавливаем только текстовый (возврат в голосовой канал — сюрприз);
+    // канал могли удалить — тогда фолбэк на дефолт.
+    const last = lastId
+      ? serverDetail.channels.find((c) => c.id === lastId && c.kind === 'text')
+      : undefined
     // «Канал по умолчанию» (настройки канала) имеет приоритет; иначе — первый
     // текстовый по позиции.
-    const target =
-      serverDetail.channels.find((c) => c.kind === 'text' && c.isDefault)
+    const target = last
+      ?? serverDetail.channels.find((c) => c.kind === 'text' && c.isDefault)
       ?? serverDetail.channels.find((c) => c.kind === 'text')
     if (target) {
       navigate(`/servers/${serverDetail.server.id}/channels/${target.id}`, { replace: true })
     }
   }, [serverParams, channelParams, serverDetail, navigate])
 
+  // /dm (домик без выбранной переписки) → последняя открытая переписка.
+  const { data: dmsForHome } = useQuery({
+    queryKey: ['dm-list'],
+    queryFn: listDms,
+    staleTime: 30_000,
+    enabled: Boolean(dmHome),
+  })
+  useEffect(() => {
+    if (!dmHome || !dmsForHome) return
+    const last = localStorage.getItem(LAST_DM_KEY)
+    if (last && dmsForHome.some((d) => d.channelId === last)) {
+      navigate(`/dm/${last}`, { replace: true })
+    }
+  }, [dmHome, dmsForHome, navigate])
+
   // Remember last open channel (both server and DM routes).
   useEffect(() => {
     if (channelParams || dmChannelParams) localStorage.setItem(LAST_CHANNEL_KEY, location)
+    if (channelParams) {
+      localStorage.setItem(LAST_SERVER_CHANNEL_PREFIX + channelParams.serverId, channelParams.channelId)
+    }
+    if (dmChannelParams) localStorage.setItem(LAST_DM_KEY, dmChannelParams.channelId)
   }, [location, channelParams, dmChannelParams])
 
   // «Недавнее» для палитры: фиксируем посещённые каналы и личные чаты.

@@ -251,6 +251,12 @@ export const MessageSchema = z.object({
   poll: PollViewSchema.nullable().optional(),
   /** Встреча (определение + RSVP + мой ответ); null — обычное сообщение. */
   event: EventViewSchema.nullable().optional(),
+  /**
+   * Nonce отправителя (из SendMessageRequest): клиент по нему матчит своё
+   * оптимистичное pending-сообщение с настоящим — иначе, пока REST-ответ в
+   * пути, WS msg.new успевает добавить сообщение и оно мигает дублем.
+   */
+  clientNonce: z.string().max(64).nullable().optional(),
 })
 export type Message = z.infer<typeof MessageSchema>
 

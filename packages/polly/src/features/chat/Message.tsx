@@ -8,6 +8,7 @@ import { Badge } from '../../components/Badge.js'
 import { confirmDialog } from '../../components/ConfirmDialog.js'
 import { Icon } from '../../components/Icon.js'
 import { toast } from '../../components/toast/index.js'
+import { Popover } from '../../components/Popover.js'
 import { memberNameColor } from '../members/MemberList.js'
 import { useProfileUi } from '../profile/store.js'
 import { useAppearance } from '../settings/appearance.js'
@@ -23,7 +24,7 @@ import { StickerEmbed } from './StickerEmbed.js'
 import { useChatDisplaySettings } from './displaySettings.js'
 import { ContextMenu } from './ContextMenu.js'
 import { ForwardedCard } from './ForwardedCard.js'
-import { InviteEmbeds } from './InviteCard.js'
+import { InviteEmbeds, isInviteOnlyContent } from './InviteCard.js'
 import { LinkPreviews } from './LinkPreviewCard.js'
 import { MessagePreview } from './MessagePreview.js'
 import { useForwardUi } from './forwardStore.js'
@@ -97,52 +98,29 @@ function Actions({
   onPickReaction: (emoji: string) => void
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
-  // Вверх по умолчанию; у верха экрана места под picker (~435px) нет — вниз.
-  const [pickerUp, setPickerUp] = useState(true)
-  const pickerContainerRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!pickerOpen) return
-    function handleMouseDown(e: MouseEvent) {
-      if (pickerContainerRef.current && !pickerContainerRef.current.contains(e.target as Node)) {
-        setPickerOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleMouseDown)
-    return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [pickerOpen])
-
-  function togglePicker() {
-    if (!pickerOpen) {
-      const top = pickerContainerRef.current?.getBoundingClientRect().top ?? 0
-      setPickerUp(top > 450)
-    }
-    setPickerOpen((o) => !o)
-  }
+  const pickerBtnRef = useRef<HTMLButtonElement>(null)
 
   if (pendingStatus) return null
   return (
     // Плавающий тулбар: абсолютом в правом-верхнем углу сообщения, с подложкой —
     // не толкает контент по ширине и читается даже поверх медиа (как в Discord).
     <div className={`absolute top-1 right-3 z-20 ${pickerOpen ? 'opacity-100' : 'opacity-0'} group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5 px-0.5 py-0.5 bg-kd-panel border border-kd-border rounded-kd shadow-kd-tile text-kd-text-mute`}>
-      <div className="relative" ref={pickerContainerRef}>
-        <button type="button" onClick={togglePicker} title="добавить реакцию" className="hover:text-kd-text p-1 block">
-          <Icon.Smile size={13} />
-        </button>
-        {pickerOpen && (
-          <div className={`absolute ${pickerUp ? 'bottom-full mb-1' : 'top-full mt-1'} right-0 z-50 shadow-lg`}>
-            <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
-              <LazyEmojiPicker
-                customEmoji={customEmoji}
-                onSelect={(emoji) => {
-                  onPickReaction(emoji)
-                  setPickerOpen(false)
-                }}
-              />
-            </Suspense>
-          </div>
-        )}
-      </div>
+      <button ref={pickerBtnRef} type="button" onClick={() => setPickerOpen((o) => !o)} title="добавить реакцию" className="hover:text-kd-text p-1 block">
+        <Icon.Smile size={13} />
+      </button>
+      {pickerOpen && pickerBtnRef.current && (
+        <Popover anchor={pickerBtnRef.current} onClose={() => setPickerOpen(false)}>
+          <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
+            <LazyEmojiPicker
+              customEmoji={customEmoji}
+              onSelect={(emoji) => {
+                onPickReaction(emoji)
+                setPickerOpen(false)
+              }}
+            />
+          </Suspense>
+        </Popover>
+      )}
       <button type="button" onClick={onReply} title="ответить" className="hover:text-kd-text p-1">
         <Icon.Reply size={13} />
       </button>
@@ -377,6 +355,9 @@ export function Message({
     ? <LinkPreviews previews={(message as IMessage).linkPreviews} />
     : null
   const inviteEmbedsEl = <InviteEmbeds content={message.content} />
+  // Сообщение из одной инвайт-ссылки: сырой URL прячем, его смысл несёт
+  // карточка приглашения (inviteEmbedsEl).
+  const showContent = Boolean(message.content) && !isInviteOnlyContent(message.content)
   const pinnedTag = (message as IMessage).pinned ? (
     <div className="flex items-center gap-1 text-[10px] text-kd-warm font-mono mb-0.5 select-none">📌 закреплено</div>
   ) : null
@@ -531,7 +512,7 @@ export function Message({
           </button>
           <div className="flex-1 min-w-0">
             {pinnedTag}
-            {message.content && (
+            {showContent && (
               <span className="text-[13px] text-kd-text leading-snug break-words">
                 <span className="kd-md inline" dangerouslySetInnerHTML={{ __html: html }} />
                 {message.editedAt && (
@@ -577,7 +558,7 @@ export function Message({
         </span>
         <div className="flex-1 min-w-0">
           {pinnedTag}
-          {message.content && (
+          {showContent && (
             <div className="text-[13px] text-kd-text leading-relaxed break-words min-w-0">
               <div className="kd-md" dangerouslySetInnerHTML={{ __html: html }} />
               {message.editedAt && (
@@ -607,8 +588,11 @@ export function Message({
   }
 
   return (
+    // pb меньше pt: снизу «доливают» py-[2px] склеенных продолжений, и при
+    // симметричном py-1 зазор голова→первое продолжение был шире, чем между
+    // продолжениями (6px против 4px).
     <div
-      className={`group relative px-4 py-1 ${hoverCls} ${opacityCls} ${enterCls}`}
+      className={`group relative px-4 pt-1 pb-[2px] ${hoverCls} ${opacityCls} ${enterCls}`}
       data-message-id={message.id}
       onContextMenu={openContextMenu}
     >
@@ -646,7 +630,7 @@ export function Message({
             )}
           </div>
           {pinnedTag}
-          {message.content && (
+          {showContent && (
             <div className="text-[13px] text-kd-text leading-relaxed mt-0.5 break-words min-w-0">
               <div className="kd-md" dangerouslySetInnerHTML={{ __html: html }} />
               {message.editedAt && (
