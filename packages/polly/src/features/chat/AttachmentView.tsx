@@ -165,6 +165,99 @@ function FileCard({ attachment }: { attachment: Attachment }) {
   )
 }
 
+// ───── Альбом (2+ фото/видео одним сообщением, как в Telegram) ─────
+
+/** Разбивка альбома на ряды: 2 → [2], 3 → [1,2], 4 → [2,2], дальше —
+    остаток от деления на 3 первым рядом («герой»), затем ряды по 3. */
+function albumRowSizes(n: number): number[] {
+  if (n === 2) return [2]
+  if (n === 3) return [1, 2]
+  if (n === 4) return [2, 2]
+  const r = n % 3
+  const rows = r === 0 ? [] : [r]
+  for (let left = n - r; left > 0; left -= 3) rows.push(3)
+  return rows
+}
+
+/** Пропорция плитки по числу элементов в ряду: одиночный ряд — широкий кадр,
+    пара — 4:3, тройка — квадраты. */
+function albumAspect(rowLen: number): string {
+  if (rowLen === 1) return 'aspect-[16/9]'
+  if (rowLen === 2) return 'aspect-[4/3]'
+  return 'aspect-square'
+}
+
+/** Плитка альбома: фото или первый кадр видео, object-cover под обрез ряда.
+    Спойлер здесь пер-плиточный — первый клик снимает блюр, второй открывает. */
+function AlbumTile({ attachment, onOpen }: { attachment: Attachment; onOpen: () => void }) {
+  const [revealed, setRevealed] = useState(false)
+  const hidden = Boolean(attachment.spoiler) && !revealed
+  return (
+    <button
+      type="button"
+      onClick={() => (hidden ? setRevealed(true) : onOpen())}
+      title={attachment.originalName}
+      className="relative block w-full h-full overflow-hidden bg-kd-panel-alt"
+    >
+      <div className={hidden ? 'w-full h-full blur-xl pointer-events-none select-none' : 'w-full h-full'}>
+        {attachment.kind === 'image' ? (
+          <img
+            src={attachment.thumbUrl ?? attachment.url}
+            alt={attachment.originalName}
+            loading="lazy"
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <video
+            src={attachment.url}
+            preload="metadata"
+            muted
+            playsInline
+            className="w-full h-full object-cover pointer-events-none"
+          />
+        )}
+      </div>
+      {attachment.kind === 'video' && !hidden && (
+        <span className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <span className="w-9 h-9 rounded-full bg-kd-overlay-strong text-kd-stage-text flex items-center justify-center text-[13px] pl-0.5">
+            ▶
+          </span>
+        </span>
+      )}
+      {hidden && (
+        <span className="absolute inset-0 flex items-center justify-center bg-kd-overlay-soft">
+          <span className="px-2 py-0.5 rounded bg-kd-bg-deep/80 text-[10px] font-mono font-bold text-kd-text uppercase tracking-wide">
+            спойлер
+          </span>
+        </span>
+      )}
+    </button>
+  )
+}
+
+/** Мозаика альбома: скруглён контейнер целиком, плитки внутри с зазором 3px. */
+function Album({ media, onOpen }: { media: Attachment[]; onOpen: (att: Attachment) => void }) {
+  const rows: Attachment[][] = []
+  let idx = 0
+  for (const size of albumRowSizes(media.length)) {
+    rows.push(media.slice(idx, idx + size))
+    idx += size
+  }
+  return (
+    <div className="w-[400px] max-w-full rounded-kd overflow-hidden border border-kd-border flex flex-col gap-[3px] bg-kd-panel-alt">
+      {rows.map((row) => (
+        <div key={row[0]?.id ?? ''} className="flex gap-[3px]">
+          {row.map((att) => (
+            <div key={att.id} className={`flex-1 min-w-0 ${albumAspect(row.length)}`}>
+              <AlbumTile attachment={att} onOpen={() => onOpen(att)} />
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** Пер-вложенный спойлер: элемент скрыт блюром + плашкой до клика. Отдельно
     от NSFW-блюра (тот гасит весь блок одной кнопкой). */
 function SpoilerWrap({ children }: { children: React.ReactNode }) {
@@ -196,6 +289,12 @@ export function AttachmentList({ attachments, lightboxContext, blur = false }: A
   // не входят: они играют inline круглым плеером.
   const media = attachments.filter((a) => (a.kind === 'image' || a.kind === 'video') && !a.circle)
 
+  // 2+ фото/видео складываются в альбом-мозаику; остальные вложения
+  // (файлы, аудио, кружки) рендерятся ниже поштучно, как раньше.
+  const isAlbum = media.length >= 2
+  const albumIds = new Set(isAlbum ? media.map((a) => a.id) : [])
+  const single = attachments.filter((a) => !albumIds.has(a.id))
+
   function openMedia(att: Attachment) {
     const idx = media.findIndex((a) => a.id === att.id)
     if (idx >= 0) setLightboxIdx(idx)
@@ -223,7 +322,8 @@ export function AttachmentList({ attachments, lightboxContext, blur = false }: A
   return (
     <div className="mt-1.5 flex flex-col gap-1.5 items-start relative">
       <div className={hideBehindBlur ? 'flex flex-col gap-1.5 items-start blur-xl pointer-events-none select-none' : 'flex flex-col gap-1.5 items-start'}>
-        {attachments.map((att) => (
+        {isAlbum && <Album media={media} onOpen={openMedia} />}
+        {single.map((att) => (
           <div key={att.id}>
             {att.spoiler ? <SpoilerWrap>{renderItem(att)}</SpoilerWrap> : renderItem(att)}
           </div>

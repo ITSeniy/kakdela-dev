@@ -14,6 +14,8 @@ export const ServerSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(64),
   iconUrl: z.string().url().nullable().optional(),
+  /** Баннер в шапке списка каналов (как в Discord). */
+  bannerUrl: z.string().url().nullable().optional(),
 })
 export type Server = z.infer<typeof ServerSchema>
 
@@ -572,8 +574,9 @@ export const CreateServerRequestSchema = z.object({
 export type CreateServerRequest = z.infer<typeof CreateServerRequestSchema>
 
 export const PatchServerRequestSchema = z.object({
-  name:    z.string().min(2).max(64).optional(),
-  iconUrl: z.string().url().nullable().optional(),
+  name:      z.string().min(2).max(64).optional(),
+  iconUrl:   z.string().url().nullable().optional(),
+  bannerUrl: z.string().url().nullable().optional(),
 })
 export type PatchServerRequest = z.infer<typeof PatchServerRequestSchema>
 

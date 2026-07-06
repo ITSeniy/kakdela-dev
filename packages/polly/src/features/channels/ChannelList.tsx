@@ -726,30 +726,79 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
           (как в Discord). Дропдаун absolute — aside не имеет overflow,
           клипаться нечему. */}
       <div ref={headerRef} className="relative shrink-0">
+        {/* С баннером шапка вырастает до 108px: картинка под скримом, имя и
+            онлайн-счётчик прижаты к верху (как в Discord). Без баннера —
+            прежняя компактная шапка. */}
         <button
           type="button"
           disabled={!serverId || !detail}
           onClick={() => setMenuOpen((v) => !v)}
           title="действия сервера"
-          className="w-full px-3.5 h-12 border-b border-kd-border bg-kd-panel-alt hover:bg-kd-panel-hi transition-colors flex items-center justify-between text-left"
+          className={[
+            'group relative w-full border-b border-kd-border text-left transition-colors overflow-hidden',
+            detail?.server.bannerUrl
+              ? 'h-[108px]'
+              : 'h-12 bg-kd-panel-alt hover:bg-kd-panel-hi',
+          ].join(' ')}
         >
-          <div className="min-w-0">
-            <div className="text-[13px] font-bold text-kd-text truncate">
-              {detail?.server.name ?? '—'}
-            </div>
-            {detail && (
-              <div className="text-[10px] text-kd-text-soft mt-px flex items-center gap-[5px]">
-                <span className="w-1.5 h-1.5 rounded-full bg-kd-online shrink-0" />
-                <span className="text-kd-online font-semibold font-mono">{onlineCount}</span>
-                <span>онлайн / {detail.memberCount} всего</span>
-              </div>
-            )}
-          </div>
-          <span
-            className={`text-[11px] text-kd-text-mute font-mono transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+          {detail?.server.bannerUrl && (
+            <>
+              <img
+                src={detail.server.bannerUrl}
+                alt=""
+                draggable={false}
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+              <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/65 to-transparent" />
+              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/15 transition-colors" />
+            </>
+          )}
+          {/* h-full обязателен: <button> центрирует контент по вертикали,
+              и без него имя «плавает» к середине баннера. */}
+          <div
+            className={[
+              'relative px-3.5 flex justify-between h-full',
+              detail?.server.bannerUrl ? 'items-start pt-2' : 'items-center',
+            ].join(' ')}
           >
-            ⌄
-          </span>
+            <div className="min-w-0">
+              <div
+                className={[
+                  'text-[13px] font-bold truncate',
+                  detail?.server.bannerUrl
+                    ? 'text-white [text-shadow:0_1px_3px_rgba(0,0,0,0.7)]'
+                    : 'text-kd-text',
+                ].join(' ')}
+              >
+                {detail?.server.name ?? '—'}
+              </div>
+              {detail && (
+                <div
+                  className={[
+                    'text-[10px] mt-px flex items-center gap-[5px]',
+                    detail.server.bannerUrl
+                      ? 'text-white/85 [text-shadow:0_1px_2px_rgba(0,0,0,0.7)]'
+                      : 'text-kd-text-soft',
+                  ].join(' ')}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-kd-online shrink-0" />
+                  <span className="text-kd-online font-semibold font-mono">{onlineCount}</span>
+                  <span>онлайн / {detail.memberCount} всего</span>
+                </div>
+              )}
+            </div>
+            <span
+              className={[
+                'text-[11px] font-mono transition-transform',
+                menuOpen ? 'rotate-180' : '',
+                detail?.server.bannerUrl
+                  ? 'text-white/90 [text-shadow:0_1px_2px_rgba(0,0,0,0.7)]'
+                  : 'text-kd-text-mute',
+              ].join(' ')}
+            >
+              ⌄
+            </span>
+          </div>
         </button>
 
         {menuOpen && serverId && (

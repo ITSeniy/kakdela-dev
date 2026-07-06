@@ -53,6 +53,8 @@ export const servers = pgTable('servers', {
   id:        uuid('id').primaryKey().defaultRandom(),
   name:      text('name').notNull(),
   iconUrl:   text('icon_url'),
+  // Баннер в шапке списка каналов (как в Discord). URL из /api/files.
+  bannerUrl: text('banner_url'),
   ownerId:   uuid('owner_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })

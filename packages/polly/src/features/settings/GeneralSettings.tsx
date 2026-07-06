@@ -43,27 +43,34 @@ export function GeneralSettings({ serverId }: GeneralSettingsProps) {
 
   const [name, setName] = useState('')
   const [iconUrl, setIconUrl] = useState<string | null>(null)
+  const [bannerUrl, setBannerUrl] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [uploadingBanner, setUploadingBanner] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const bannerFileRef = useRef<HTMLInputElement>(null)
 
   // Гидратируем форму из detail каждый раз, когда серверный кеш обновляется.
   useEffect(() => {
     if (detail?.server) {
       setName(detail.server.name)
       setIconUrl(detail.server.iconUrl ?? null)
+      setBannerUrl(detail.server.bannerUrl ?? null)
     }
-  }, [detail?.server.name, detail?.server.iconUrl, detail?.server])
+  }, [detail?.server.name, detail?.server.iconUrl, detail?.server.bannerUrl, detail?.server])
 
   const dirty =
     detail !== undefined
-    && (name.trim() !== detail.server.name || (iconUrl ?? null) !== (detail.server.iconUrl ?? null))
+    && (name.trim() !== detail.server.name
+      || (iconUrl ?? null) !== (detail.server.iconUrl ?? null)
+      || (bannerUrl ?? null) !== (detail.server.bannerUrl ?? null))
 
   const saveMutation = useMutation({
     mutationFn: () =>
       patchServer(serverId, {
         ...(detail && name.trim() !== detail.server.name ? { name: name.trim() } : {}),
         ...(detail && (iconUrl ?? null) !== (detail.server.iconUrl ?? null) ? { iconUrl: iconUrl ?? null } : {}),
+        ...(detail && (bannerUrl ?? null) !== (detail.server.bannerUrl ?? null) ? { bannerUrl: bannerUrl ?? null } : {}),
       }),
     onSuccess: (server) => {
       void queryClient.invalidateQueries({ queryKey: ['server', serverId] })
@@ -72,6 +79,7 @@ export function GeneralSettings({ serverId }: GeneralSettingsProps) {
       // Локально подтягиваем имя из ответа — пока не пришёл свежий detail.
       setName(server.name)
       setIconUrl(server.iconUrl ?? null)
+      setBannerUrl(server.bannerUrl ?? null)
     },
     onError: (err) => setError(err instanceof ApiError ? err.message : (err as Error).message),
   })
@@ -141,6 +149,28 @@ export function GeneralSettings({ serverId }: GeneralSettingsProps) {
     e.target.value = ''
   }
 
+  async function pickBanner(file: File) {
+    setError(null)
+    if (!file.type.startsWith('image/') || !isSupportedType(file.type)) {
+      setError('нужна картинка (jpg/png/gif/webp)')
+      return
+    }
+    setUploadingBanner(true)
+    try {
+      const att = await uploadAttachment(file)
+      setBannerUrl(att.url)
+    } catch (err) {
+      setError(err instanceof UploadError ? err.message : (err as Error).message)
+    } finally {
+      setUploadingBanner(false)
+    }
+  }
+  function onBannerFile(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    if (f) void pickBanner(f)
+    e.target.value = ''
+  }
+
   async function confirmDelete() {
     if (!detail) return
     const ok = await confirmDialog({
@@ -201,6 +231,39 @@ export function GeneralSettings({ serverId }: GeneralSettingsProps) {
             />
             <div className="text-[10px] font-mono text-kd-text-mute">{name.length}/64</div>
           </div>
+        </div>
+      </Field>
+
+      <Field label="баннер" hint="картинка в шапке списка каналов, как в Discord; лучше всего ~600×240">
+        <div className="flex flex-col gap-1.5">
+          <div
+            onClick={() => (isOwner || role === 'admin') && bannerFileRef.current?.click()}
+            className={[
+              'relative w-full aspect-[5/2] rounded-kd flex items-center justify-center overflow-hidden bg-kd-panel',
+              isOwner || role === 'admin'
+                ? 'cursor-pointer border-2 border-dashed border-kd-border hover:border-kd-text-mute'
+                : 'border border-kd-border',
+            ].join(' ')}
+            title={isOwner || role === 'admin' ? 'нажми, чтобы загрузить баннер' : undefined}
+          >
+            {bannerUrl ? (
+              <img src={bannerUrl} alt="баннер" className="absolute inset-0 w-full h-full object-cover" />
+            ) : (
+              <span className="text-[10px] font-mono text-kd-text-mute">
+                {uploadingBanner ? '…' : 'без баннера'}
+              </span>
+            )}
+          </div>
+          <input ref={bannerFileRef} type="file" accept="image/*" className="hidden" onChange={onBannerFile} />
+          {bannerUrl && (isOwner || role === 'admin') && (
+            <button
+              type="button"
+              onClick={() => setBannerUrl(null)}
+              className="self-start text-[10px] font-mono text-kd-text-mute hover:text-kd-danger transition-colors"
+            >
+              убрать баннер
+            </button>
+          )}
         </div>
       </Field>
 

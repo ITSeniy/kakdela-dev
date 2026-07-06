@@ -48,6 +48,8 @@ export type ServerEvent =
   | { t: 'member.profile'; serverId: string; userId: string; nickname: string | null; avatarUrl: string | null }
   | { t: 'thread.new'; parentChannelId: string; parentMessageId: string; threadChannelId: string; name: string }
   | { t: 'thread.archive'; parentChannelId: string; threadChannelId: string; archivedAt: string }
+  // Имя/иконка/баннер сервера изменились — клиент инвалидирует detail и рельсу.
+  | { t: 'server.update'; server: Server }
   | { t: 'channel.create'; serverId: string; channel: Channel }
   | { t: 'channel.update'; serverId: string; channel: Channel }
   | { t: 'channel.delete'; serverId: string; channelId: string }
@@ -174,6 +176,7 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
     threadChannelId: uuid,
     archivedAt: z.string(),
   }),
+  z.object({ t: z.literal('server.update'), server: ServerSchema }),
   z.object({ t: z.literal('channel.create'), serverId: uuid, channel: ChannelSchema }),
   z.object({ t: z.literal('channel.update'), serverId: uuid, channel: ChannelSchema }),
   z.object({ t: z.literal('channel.delete'), serverId: uuid, channelId: uuid }),

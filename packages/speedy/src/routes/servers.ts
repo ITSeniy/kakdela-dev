@@ -59,6 +59,7 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
           id: servers.id,
           name: servers.name,
           iconUrl: servers.iconUrl,
+          bannerUrl: servers.bannerUrl,
         })
         .from(serverMembers)
         .innerJoin(servers, eq(serverMembers.serverId, servers.id))
@@ -145,7 +146,7 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
       await assertMember(userId, serverId)
 
       const serverRows = await db
-        .select({ id: servers.id, name: servers.name, iconUrl: servers.iconUrl })
+        .select({ id: servers.id, name: servers.name, iconUrl: servers.iconUrl, bannerUrl: servers.bannerUrl })
         .from(servers)
         .where(eq(servers.id, serverId))
         .limit(1)
@@ -467,23 +468,33 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
     async (req, reply) => {
       const { serverId } = req.params
       const userId = req.authUser!.id
-      const { name, iconUrl } = req.body
+      const { name, iconUrl, bannerUrl } = req.body
 
       await assertPermission(userId, serverId, 'MANAGE_SERVER')
 
       const updates: Partial<typeof servers.$inferInsert> = {}
       if (name !== undefined) updates.name = name
       if (iconUrl !== undefined) updates.iconUrl = iconUrl ?? null
+      if (bannerUrl !== undefined) updates.bannerUrl = bannerUrl ?? null
 
       const updated = await db
         .update(servers)
         .set(updates)
         .where(eq(servers.id, serverId))
-        .returning({ id: servers.id, name: servers.name, iconUrl: servers.iconUrl })
+        .returning({ id: servers.id, name: servers.name, iconUrl: servers.iconUrl, bannerUrl: servers.bannerUrl })
       const server = updated[0]
       if (!server) throw notFound('server-not-found', 'server not found')
 
-      return reply.code(200).send({ id: server.id, name: server.name, iconUrl: server.iconUrl ?? null })
+      const dto = {
+        id: server.id,
+        name: server.name,
+        iconUrl: server.iconUrl ?? null,
+        bannerUrl: server.bannerUrl ?? null,
+      }
+
+      void broadcastToServer(serverId, { t: 'server.update', server: dto })
+
+      return reply.code(200).send(dto)
     },
   )
 
