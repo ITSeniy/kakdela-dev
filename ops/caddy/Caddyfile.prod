@@ -6,6 +6,15 @@
 {$KD_DOMAIN} {
 	encode zstd gzip
 
+	# Internal-эндпоинты (/api/internal/*) — только для docker-сети:
+	# LiveKit шлёт webhook'ы напрямую на speedy:3001, мимо Caddy.
+	# Наружу этот префикс не существует (defense in depth: даже если
+	# будущий internal-роут забудет собственную аутентификацию,
+	# снаружи он недостижим).
+	handle /api/internal/* {
+		respond 404
+	}
+
 	# REST API
 	handle /api/* {
 		reverse_proxy speedy:3001

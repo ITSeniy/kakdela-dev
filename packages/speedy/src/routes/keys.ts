@@ -24,6 +24,7 @@ export const keysRoutes: FastifyPluginAsyncZod = async (app) => {
     '/keys/bundle',
     {
       preHandler: app.authenticate,
+      config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
       schema: {
         body: PublishKeysRequestSchema,
         response: { 204: z.null(), 401: ErrorBodySchema },
@@ -65,6 +66,7 @@ export const keysRoutes: FastifyPluginAsyncZod = async (app) => {
     '/keys/topup',
     {
       preHandler: app.authenticate,
+      config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
       schema: {
         body: TopupPrekeysRequestSchema,
         response: { 204: z.null(), 401: ErrorBodySchema },
@@ -103,6 +105,11 @@ export const keysRoutes: FastifyPluginAsyncZod = async (app) => {
     '/keys/:userId/bundle',
     {
       preHandler: app.authenticate,
+      // Каждый запрос поглощает один one-time prekey получателя: без лимита
+      // любой аутентифицированный может циклично опустошить OTP-пул жертвы
+      // (деградация forward secrecy). 20/мин хватает на любые легитимные
+      // старты сессий, клиент сам топапит пул.
+      config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
       schema: {
         params: z.object({ userId: z.string().uuid() }),
         response: { 200: PrekeyBundleResponseSchema, 401: ErrorBodySchema, 404: ErrorBodySchema },

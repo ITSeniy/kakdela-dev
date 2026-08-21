@@ -213,6 +213,9 @@ export const filesRoutes: FastifyPluginAsyncZod = async (app) => {
     '/files/presign',
     {
       preHandler: app.authenticate,
+      // Без лимита presign = бесконечные pending-строки в files и безлимитная
+      // заливка в MinIO. 30 стартов загрузки/мин — с запасом для любого UI.
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
       schema: {
         body: PresignRequestSchema,
         response: {
@@ -277,6 +280,9 @@ export const filesRoutes: FastifyPluginAsyncZod = async (app) => {
     '/files/:id/finalize',
     {
       preHandler: app.authenticate,
+      // Финализация тянет 64 KB из MinIO и гоняет magic-bytes/размеры —
+      // не даём крутить её в цикле.
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
       schema: {
         params: z.object({ id: z.string().uuid() }),
         response: {

@@ -22,6 +22,7 @@ import { channelCategories, channelReads, channels, memberRoles, serverMembers, 
 import { audit } from '../lib/audit.js'
 import { CHANNEL_DTO_COLS } from '../lib/channel-dto.js'
 import { db } from '../lib/db.js'
+import { purgeFilesForServer } from '../lib/media-gc.js'
 import {
   assertMember,
   assertPermission,
@@ -523,6 +524,10 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
       const userId = req.authUser!.id
 
       await assertRole(userId, serverId, ['owner'])
+
+      // Файлы всех каналов сервера — ДО каскадного удаления (аудит M-6):
+      // после него строки files исчезнут, ключи S3-объектов не найти.
+      await purgeFilesForServer(serverId, req.log)
 
       const result = await db.delete(servers).where(eq(servers.id, serverId)).returning({ id: servers.id })
       if (!result[0]) throw notFound('server-not-found', 'server not found')

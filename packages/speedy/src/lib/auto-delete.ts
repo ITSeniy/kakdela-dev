@@ -5,7 +5,7 @@
 // Запускается из index.ts после listen. Интервал — раз в 30 минут, плюс один
 // прогон через минуту после старта. Лёгкий: один UPDATE на канал.
 
-import { and, eq, isNotNull, isNull, lt } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull, lt } from 'drizzle-orm'
 import type { FastifyBaseLogger } from 'fastify'
 
 import { channels, messages } from '../db/schema.js'
@@ -14,9 +14,11 @@ import { broadcastToChannel } from '../ws/broadcast.js'
 
 const SWEEP_INTERVAL_MS = 30 * 60 * 1000
 const FIRST_SWEEP_DELAY_MS = 60 * 1000
-// Защита от лавины broadcast'ов, если накопился большой бэклог: за один прогон
-// канала гасим не больше N сообщений (остаток добьётся в следующий проход).
-const MAX_PER_CHANNEL = 1000
+// Защита от лавины, если накопился большой бэклог: за одну итерацию гасим не
+// больше N сообщений — и БД, и broadcast. Итерации повторяются, пока есть что
+// удалять (до полного опустошения канала), так что клиенты всегда получают
+// msg.delete на каждое реально удалённое сообщение.
+const MAX_PER_BATCH = 1000
 
 async function sweepOnce(log: FastifyBaseLogger): Promise<void> {
   const chs = await db
@@ -27,22 +29,36 @@ async function sweepOnce(log: FastifyBaseLogger): Promise<void> {
   for (const ch of chs) {
     if (!ch.sec || ch.sec <= 0) continue
     const cutoff = new Date(Date.now() - ch.sec * 1000)
-    const deleted = await db
-      .update(messages)
-      .set({ deletedAt: new Date(), content: '' })
-      .where(and(
-        eq(messages.channelId, ch.id),
-        isNull(messages.deletedAt),
-        lt(messages.createdAt, cutoff),
-      ))
-      .returning({ id: messages.id })
+    let swept = 0
+    for (;;) {
+      // Сначала выбираем пачку id, потом удаляем по ним: UPDATE ... LIMIT в
+      // Postgres нет, а удалять вслепую — значит терять id для broadcast.
+      const doomed = await db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(and(
+          eq(messages.channelId, ch.id),
+          isNull(messages.deletedAt),
+          lt(messages.createdAt, cutoff),
+        ))
+        .orderBy(messages.id)
+        .limit(MAX_PER_BATCH)
+      if (doomed.length === 0) break
+      const ids = doomed.map((d) => d.id)
 
-    const ids = deleted.slice(0, MAX_PER_CHANNEL)
-    for (const d of ids) {
-      void broadcastToChannel(ch.id, { t: 'msg.delete', channelId: ch.id, messageId: d.id })
+      await db
+        .update(messages)
+        .set({ deletedAt: new Date(), content: '' })
+        .where(inArray(messages.id, ids))
+
+      for (const id of ids) {
+        void broadcastToChannel(ch.id, { t: 'msg.delete', channelId: ch.id, messageId: id })
+      }
+      swept += ids.length
+      if (doomed.length < MAX_PER_BATCH) break
     }
-    if (deleted.length > 0) {
-      log.info({ channelId: ch.id, count: deleted.length }, 'auto-delete swept channel')
+    if (swept > 0) {
+      log.info({ channelId: ch.id, count: swept }, 'auto-delete swept channel')
     }
   }
 }

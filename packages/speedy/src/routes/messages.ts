@@ -32,6 +32,7 @@ import { db } from '../lib/db.js'
 import { env } from '../env.js'
 import { resolvePreviewsForContent } from '../lib/link-preview.js'
 import { extractMentions, type MentionCandidate, type ParsedMention, type RoleCandidate } from '../lib/mention-extractor.js'
+import { purgeAttachmentsForMessages } from '../lib/media-gc.js'
 import { assertCanAccessChannel, assertPermission, getMemberPermissions, notFound } from '../lib/permissions.js'
 import { redis } from '../lib/redis.js'
 import { presence } from '../presence/store.js'
@@ -765,6 +766,12 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
       const msg = rows[0]
       if (!msg) throw notFound('message-not-found', 'message not found')
       if (msg.deletedAt !== null) throw notFound('message-not-found', 'message not found')
+
+      // Проверяем доступ к каналу ДО проверки авторства: участник, выгнанный
+      // из сервера (или чужак), не должен ни редактировать свои старые
+      // сообщения, ни даже узнавать о существовании чужих.
+      await assertCanAccessChannel(userId, msg.channelId)
+
       if (msg.authorId !== userId) {
         return reply.code(403).send({ error: { code: 'forbidden', message: 'only the author can edit this message' } })
       }
@@ -858,28 +865,30 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
       if (!msg) throw notFound('message-not-found', 'message not found')
       if (msg.deletedAt !== null) throw notFound('message-not-found', 'message not found')
 
+      // Доступ к каналу — прежде авторства и прав: кикнутый участник не может
+      // удалять даже свои сообщения из каналов сервера, который его выгнал.
+      const access = await assertCanAccessChannel(userId, msg.channelId)
+
       const isAuthor = msg.authorId === userId
 
       if (!isAuthor) {
         // Admins/owners can delete any message in a server channel.
         // В DM admin'ов нет — удалять может только автор.
-        const channelRows = await db
-          .select({ serverId: channels.serverId, kind: channels.kind })
-          .from(channels)
-          .where(eq(channels.id, msg.channelId))
-          .limit(1)
-        const ch = channelRows[0]
-        if (!ch) throw notFound('channel-not-found', 'channel not found')
-        if (ch.kind === 'dm' || !ch.serverId) {
+        if (access.kind !== 'server') {
           return reply.code(403).send({ error: { code: 'forbidden', message: 'only the author can delete this message' } })
         }
-        await assertPermission(userId, ch.serverId, 'MANAGE_MESSAGES')
+        await assertPermission(userId, access.serverId, 'MANAGE_MESSAGES')
       }
 
       await db
         .update(messages)
         .set({ deletedAt: new Date(), content: '' })
         .where(eq(messages.id, id))
+
+      // Вложения удаляем из MinIO сразу (аудит M-6): soft-delete не должен
+      // оставлять файл доступным по прямой ссылке. Fire-and-forget, как и
+      // broadcast — ответ клиенту ждать S3 не должен.
+      void purgeAttachmentsForMessages([id], req.log)
 
       void broadcastToChannel(msg.channelId, {
         t: 'msg.delete',

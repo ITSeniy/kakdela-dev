@@ -12,6 +12,7 @@ import { channelCategories, channelReads, channels, messages } from '../db/schem
 import { audit } from '../lib/audit.js'
 import { CHANNEL_DTO_COLS } from '../lib/channel-dto.js'
 import { db } from '../lib/db.js'
+import { purgeFilesForChannel } from '../lib/media-gc.js'
 import { assertCanAccessChannel, assertMember, assertPermission, notFound } from '../lib/permissions.js'
 import { broadcastToServer } from '../ws/broadcast.js'
 
@@ -248,6 +249,10 @@ export const channelsRoutes: FastifyPluginAsyncZod = async (app) => {
       const existingServerId = existing.serverId
 
       await assertPermission(userId, existingServerId, 'MANAGE_CHANNELS')
+
+      // Файлы канала (и его тредов) — ДО удаления: после каскада строки files
+      // исчезнут, и ключи S3-объектов будет нечем найти (аудит M-6).
+      await purgeFilesForChannel(channelId, req.log)
 
       await db.delete(channels).where(eq(channels.id, channelId))
 

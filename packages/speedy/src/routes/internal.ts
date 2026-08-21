@@ -29,8 +29,9 @@ async function verifyAndParseWebhook(body: string, authHeader: string): Promise<
 }
 
 // Внутренние эндпоинты — вызываются другими сервисами (сейчас только LiveKit),
-// не пользовательскими клиентами. Прячем за `/api/internal/*` и не выставляем
-// в Caddy наружу в проде.
+// не пользовательскими клиентами. Живут под `/api/internal/*`; на проде Caddy
+// отвечает на этот префикс 404 (см. ops/caddy/Caddyfile.prod), а LiveKit ходит
+// напрямую по docker-сети (http://speedy:3001, см. livekit.prod.yaml → webhook).
 export const internalRoutes: FastifyPluginAsync = async (app) => {
   // LiveKit подписывает webhook'и JWT-токеном, в `sha256`-клейме которого
   // лежит хэш ровно того body, что прилетел. Чтобы валидация сработала,

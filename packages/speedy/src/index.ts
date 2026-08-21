@@ -10,6 +10,7 @@ import { startBirthdaySweeper } from './lib/birthdays.js'
 import { startEventReminders } from './lib/event-reminders.js'
 import { startSecretEnvelopeSweeper } from './lib/secret-sweeper.js'
 import { makeLoggerOptions } from './lib/logger.js'
+import { startMediaGcSweeper } from './lib/media-gc.js'
 import { redis } from './lib/redis.js'
 import { presence } from './presence/store.js'
 import { healthRoutes } from './routes/health.js'
@@ -42,7 +43,14 @@ import { authPlugin } from './auth/middleware.js'
 import { wsPlugin } from './ws/server.js'
 
 async function main() {
-  const app = Fastify({ logger: makeLoggerOptions() }).withTypeProvider<ZodTypeProvider>()
+  // TRUST_PROXY='auto' → доверять X-Forwarded-For только в production
+  // (за Caddy). См. комментарий в env.ts.
+  const trustProxy =
+    env.TRUST_PROXY === 'auto'
+      ? env.NODE_ENV === 'production'
+      : env.TRUST_PROXY === 'true'
+
+  const app = Fastify({ logger: makeLoggerOptions(), trustProxy }).withTypeProvider<ZodTypeProvider>()
 
   app.setValidatorCompiler(validatorCompiler)
   app.setSerializerCompiler(serializerCompiler)
@@ -59,6 +67,11 @@ async function main() {
     global: false,
     redis,
     nameSpace: 'rl:',
+    // Единый формат ошибок по конвенции { error: { code, message } }
+    // вместо дефолтного тела плагина.
+    errorResponseBuilder: () => ({
+      error: { code: 'rate-limited', message: 'too many requests, slow down' },
+    }),
   })
   await app.register(authPlugin)
 
@@ -68,8 +81,11 @@ async function main() {
       ? error.code
       : 'internal-error'
     app.log.error(error)
+    // Текст внутренних ошибок наружу не отдаём (фрагменты SQL, имена
+    // констрейнтов и т.п.); детали — в логе.
+    const message = statusCode >= 500 ? 'internal server error' : error.message
     void reply.code(statusCode).send({
-      error: { code, message: error.message },
+      error: { code, message },
     })
   })
 
@@ -124,6 +140,9 @@ async function main() {
   startEventReminders(app.log)
   // Retention недоставленных секретных конвертов (T-102): чистим старше 30 дней.
   startSecretEnvelopeSweeper(app.log)
+  // GC вложений MinIO: soft-deleted сообщения, заброшенные pending/unattached
+  // (аудит M-6). S3-объекты не каскадятся вместе со строками files.
+  startMediaGcSweeper(app.log)
 }
 
 main().catch((err) => {

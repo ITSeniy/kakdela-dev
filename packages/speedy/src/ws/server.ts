@@ -18,6 +18,12 @@ import { registry } from './registry.js'
 import { dispatchClientEvent } from './router.js'
 
 const HELLO_TIMEOUT_MS = 5_000
+// hello/typing/pong — крошечные JSON-кадры. Дефолт ws (~100 MiB) позволял
+// пре-auth DoS: JSON.parse гигантских кадров до аутентификации.
+const MAX_WS_PAYLOAD_BYTES = 64 * 1024
+// Лимит одновременных соединений с одного IP (защита от сокет-флуда).
+// С запасом для семьи за одним NAT и человека с телефоном+десктопом.
+const MAX_SOCKETS_PER_IP = 30
 
 type DbUser = typeof users.$inferSelect
 
@@ -88,9 +94,23 @@ async function authorizeHello(token: string, socket: WebSocket): Promise<HelloRe
 }
 
 export const wsPlugin: FastifyPluginAsync = async (app) => {
-  await app.register(fastifyWebsocket)
+  await app.register(fastifyWebsocket, { options: { maxPayload: MAX_WS_PAYLOAD_BYTES } })
   await broker.init()
   wireBrokerToRegistry()
+
+  const socketsPerIp = new Map<string, number>()
+  function acquireIpSlot(ip: string): boolean {
+    const n = socketsPerIp.get(ip) ?? 0
+    if (n >= MAX_SOCKETS_PER_IP) return false
+    socketsPerIp.set(ip, n + 1)
+    return true
+  }
+  function releaseIpSlot(ip: string): void {
+    const n = socketsPerIp.get(ip)
+    if (n === undefined) return
+    if (n <= 1) socketsPerIp.delete(ip)
+    else socketsPerIp.set(ip, n - 1)
+  }
 
   presence.onOffline(async (userId) => {
     const rows = await db
@@ -102,7 +122,12 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
     }
   })
 
-  app.get('/ws', { websocket: true }, (socket, _req) => {
+  app.get('/ws', { websocket: true }, (socket, req) => {
+    if (!acquireIpSlot(req.ip)) {
+      try { socket.close(4429, 'too-many-connections') } catch { /* ignore */ }
+      return
+    }
+
     let conn: Connection | null = null
     let helloed = false
     let helloPending = false
@@ -178,6 +203,7 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
     })
 
     socket.on('close', () => {
+      releaseIpSlot(req.ip)
       clearTimeout(helloTimeout)
       if (conn) {
         conn.cleanup()

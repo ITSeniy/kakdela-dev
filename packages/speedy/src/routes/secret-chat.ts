@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { z } from 'zod'
 
@@ -20,6 +20,9 @@ import { broadcastToUser } from '../ws/broadcast.js'
 // он не видит и не парсит. read/typing — это типизированные конверты, идущие
 // тем же E2EE-каналом (их «значение» зашифровано внутри).
 const INBOX_LIMIT = 200
+// Капа на очередь одного получателя: защита от флуда конвертами (64 KB каждый,
+// retention 30 дней). Порядок величины — месяцы активной переписки 1:1.
+const MAX_PENDING_PER_RECIPIENT = 500
 
 export const secretChatRoutes: FastifyPluginAsyncZod = async (app) => {
   // ───── POST /api/secret/send — положить конверт в очередь адресата ─────
@@ -27,6 +30,7 @@ export const secretChatRoutes: FastifyPluginAsyncZod = async (app) => {
     '/secret/send',
     {
       preHandler: app.authenticate,
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
       schema: {
         body: SecretSendRequestSchema,
         response: {
@@ -34,6 +38,7 @@ export const secretChatRoutes: FastifyPluginAsyncZod = async (app) => {
           400: ErrorBodySchema,
           401: ErrorBodySchema,
           404: ErrorBodySchema,
+          429: ErrorBodySchema,
         },
       },
     },
@@ -50,6 +55,18 @@ export const secretChatRoutes: FastifyPluginAsyncZod = async (app) => {
       // любой аутентифицированный (all-friends-by-default, см. routes/dm.ts).
       const exists = await db.select({ id: users.id }).from(users).where(eq(users.id, toUserId)).limit(1)
       if (!exists[0]) throw notFound('user-not-found', 'recipient not found')
+
+      // Не даём переполнить очередь получателя (race между параллельными
+      // send'ами не критичен — капа приблизительная, sweeper всё равно чистит).
+      const countRows = await db
+        .select({ count: sql<number>`COUNT(*)::int` })
+        .from(secretEnvelopes)
+        .where(eq(secretEnvelopes.toUserId, toUserId))
+      if ((countRows[0]?.count ?? 0) >= MAX_PENDING_PER_RECIPIENT) {
+        return reply.code(429).send({
+          error: { code: 'mailbox-full', message: 'recipient has too many pending envelopes' },
+        })
+      }
 
       const inserted = await db
         .insert(secretEnvelopes)
