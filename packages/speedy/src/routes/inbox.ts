@@ -1,4 +1,5 @@
-import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { z } from 'zod'
 
@@ -9,10 +10,29 @@ import {
   type InboxMention,
 } from '@kakdela/ginzu/api-types'
 
-import { channels, mentions, messages, serverMembers, servers, users } from '../db/schema.js'
+import { channels, dmChannels, mentions, messages, serverMembers, servers, users } from '../db/schema.js'
 import { db } from '../lib/db.js'
 
 const PREVIEW_MAX = 240
+
+// Членство ЗРИТЛЯ в сервере канала (join для author-профиля — отдельный).
+const viewerMembership = alias(serverMembers, 'viewer_membership')
+
+/**
+ * Упоминание видно в инбоксе, только если канал сейчас доступен: после кика/
+ * выхода с сервера старые упоминания с превью контента не должны ни
+ * показываться, ни считаться непрочитанными (аудит M-5). Поиск фильтрует так
+ * же. Повторный вход на сервер упоминания возвращает.
+ */
+function accessCondition(userId: string) {
+  return or(
+    and(
+      eq(channels.kind, 'dm'),
+      or(eq(dmChannels.userAId, userId), eq(dmChannels.userBId, userId)),
+    ),
+    and(ne(channels.kind, 'dm'), isNotNull(viewerMembership.userId)),
+  )
+}
 
 function preview(s: string): string {
   const trimmed = s.replace(/\s+/g, ' ').trim()
@@ -46,6 +66,7 @@ export const inboxRoutes: FastifyPluginAsyncZod = async (app) => {
       const conditions = [
         eq(mentions.mentionedUserId, userId),
         isNull(messages.deletedAt),
+        accessCondition(userId),
       ]
       if (unreadOnly) conditions.push(isNull(mentions.readAt))
       if (before !== undefined) conditions.push(lt(messages.id, before))
@@ -73,6 +94,11 @@ export const inboxRoutes: FastifyPluginAsyncZod = async (app) => {
         .leftJoin(serverMembers, and(
           eq(serverMembers.serverId, channels.serverId),
           eq(serverMembers.userId, messages.authorId),
+        ))
+        .leftJoin(dmChannels, eq(dmChannels.channelId, messages.channelId))
+        .leftJoin(viewerMembership, and(
+          eq(viewerMembership.serverId, channels.serverId),
+          eq(viewerMembership.userId, userId),
         ))
         .where(and(...conditions))
         .orderBy(desc(messages.id))
@@ -111,14 +137,22 @@ export const inboxRoutes: FastifyPluginAsyncZod = async (app) => {
       }))
 
       // Общее число непрочитанных — для бейджа на иконке «входящие».
+      // Тот же фильтр доступа: недоступные упоминания не считаются.
       const unreadRows = await db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(mentions)
         .innerJoin(messages, eq(mentions.messageId, messages.id))
+        .innerJoin(channels, eq(messages.channelId, channels.id))
+        .leftJoin(dmChannels, eq(dmChannels.channelId, messages.channelId))
+        .leftJoin(viewerMembership, and(
+          eq(viewerMembership.serverId, channels.serverId),
+          eq(viewerMembership.userId, userId),
+        ))
         .where(and(
           eq(mentions.mentionedUserId, userId),
           isNull(mentions.readAt),
           isNull(messages.deletedAt),
+          accessCondition(userId),
         ))
       const unreadTotal = unreadRows[0]?.count ?? 0
 
@@ -130,6 +164,8 @@ export const inboxRoutes: FastifyPluginAsyncZod = async (app) => {
   // Идемпотентно отмечает упоминания прочитанными по messageIds. Никакой
   // проверки доступа к сообщению — упомянутый user тривиально имеет право
   // погасить свой бейдж: затрагиваем только строки mentioned_user_id = me.
+  // Это же позволяет клиенту дочистить непрочитанные по каналам, ставшим
+  // недоступными после кика (в списке они больше не показываются).
   app.post(
     '/inbox/mentions/read',
     {
