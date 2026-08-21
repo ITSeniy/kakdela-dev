@@ -46,13 +46,33 @@ export async function appendOutgoing(
   return call<StoredSecretMessage>('secret_history_append_outgoing', { peerUserId, body, sentAtMs })
 }
 
-/** Записать входящее сообщение (после расшифровки крипто-ядром). */
+/**
+ * Записать входящее сообщение (после расшифровки крипто-ядром) и запомнить
+ * конверт. null — конверт уже обработан (повторная доставка после креша
+ * между показом и ack, аудит M-10): дубликат в историю не пишется.
+ */
 export async function appendIncoming(
   peerUserId: string,
   body: string,
   sentAtMs: number,
-): Promise<StoredSecretMessage> {
-  return call<StoredSecretMessage>('secret_history_append_incoming', { peerUserId, body, sentAtMs })
+  envelopeId: string,
+): Promise<StoredSecretMessage | null> {
+  return call<StoredSecretMessage | null>('secret_history_append_incoming', {
+    peerUserId,
+    body,
+    sentAtMs,
+    envelopeId,
+  })
+}
+
+/** Обработан ли уже этот конверт (дедуп повторной доставки, M-10). */
+export async function isEnvelopeSeen(peerUserId: string, envelopeId: string): Promise<boolean> {
+  return call<boolean>('secret_history_is_envelope_seen', { peerUserId, envelopeId })
+}
+
+/** Запомнить конверт обработанным без записи в историю (read/typing). */
+export async function markEnvelopeSeen(peerUserId: string, envelopeId: string): Promise<void> {
+  await call('secret_history_mark_envelope_seen', { peerUserId, envelopeId })
 }
 
 /** Пометить исходящие прочитанными (по входящему read-конверту) → галочки ✓✓. */

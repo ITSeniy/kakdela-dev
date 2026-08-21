@@ -63,6 +63,14 @@ pub struct StoredMessage {
 struct Snapshot {
     next_id: u64,
     messages: Vec<StoredMessage>,
+    // Аудит 2026-08 M-10: watermark обработанных конвертов (peer → последний
+    // envelope id). Id конвертов — uuidv7 (лексикографически = хронологически),
+    // релей отдаёт inbox по возрастанию, поэтому сравнения строк достаточно.
+    // Служит дедупом «decrypt → показать → ack»: креш между показом и ack
+    // приводит к повторной доставке, и без watermark повторный decrypt упал бы
+    // (ratchet уже продвинулся), а конверт завис до retention-чистки.
+    #[serde(default)]
+    envelope_watermarks: std::collections::HashMap<String, String>,
 }
 
 pub struct HistoryStore {
@@ -74,8 +82,17 @@ pub struct HistoryStore {
 /// Открыть (или создать пустую) локальную историю в `<app_data>/kd-secret/`.
 /// В отличие от крипто-ядра здесь нет «инициализации»: пустой снапшот валиден.
 pub fn open(app_data_dir: &Path) -> Result<HistoryStore, CmdError> {
-    let dir = sealed::data_dir(app_data_dir)?;
     let key_provider = sealed::default_key_provider(app_data_dir)?;
+    open_with_provider(app_data_dir, key_provider)
+}
+
+/// Явный провайдер — для юнит-тестов (SoftwareKeyProvider): реальный OS-keychain
+/// между тестами общий, параллельные прогоны затирали бы DEK друг друга.
+pub fn open_with_provider(
+    app_data_dir: &Path,
+    key_provider: Box<dyn KeyProvider>,
+) -> Result<HistoryStore, CmdError> {
+    let dir = sealed::data_dir(app_data_dir)?;
     let path = dir.join(HISTORY_FILE);
     let snap = match sealed::read_sealed(&path, key_provider.as_ref())? {
         Some(bytes) => serde_json::from_slice(&bytes)
@@ -130,14 +147,50 @@ impl HistoryStore {
         self.push(peer_user_id, Direction::Out, body, sent_at_ms, Status::Sent)
     }
 
-    /// Записать входящее сообщение (после расшифровки).
+    /// Обработан ли уже этот конверт (дедуп повторной доставки, M-10).
+    pub fn is_envelope_seen(&self, peer_user_id: &str, envelope_id: &str) -> bool {
+        self.snap
+            .envelope_watermarks
+            .get(peer_user_id)
+            .is_some_and(|last| envelope_id <= last.as_str())
+    }
+
+    /// Запомнить конверт обработанным БЕЗ записи в историю (контрол-конверты
+    /// read/typing — они в историю не попадают).
+    pub fn mark_envelope_seen(
+        &mut self,
+        peer_user_id: &str,
+        envelope_id: &str,
+    ) -> Result<(), CmdError> {
+        let last = self
+            .snap
+            .envelope_watermarks
+            .entry(peer_user_id.to_string())
+            .or_default();
+        if envelope_id > last.as_str() {
+            *last = envelope_id.to_string();
+            self.persist()?;
+        }
+        Ok(())
+    }
+
+    /// Записать входящее сообщение (после расшифровки) и запомнить его конверт.
+    /// None — конверт уже был обработан (повторная доставка): дубликат НЕ пишем.
     pub fn append_incoming(
         &mut self,
         peer_user_id: &str,
         body: String,
         sent_at_ms: u64,
-    ) -> Result<StoredMessage, CmdError> {
-        self.push(peer_user_id, Direction::In, body, sent_at_ms, Status::Delivered)
+        envelope_id: &str,
+    ) -> Result<Option<StoredMessage>, CmdError> {
+        if self.is_envelope_seen(peer_user_id, envelope_id) {
+            return Ok(None);
+        }
+        let msg = self.push(peer_user_id, Direction::In, body, sent_at_ms, Status::Delivered)?;
+        // push уже сделал persist; watermark едет тем же снапшотом в следующий
+        // раз, но для надёжности после креша между push и ack отметим сразу.
+        self.mark_envelope_seen(peer_user_id, envelope_id)?;
+        Ok(Some(msg))
     }
 
     /// Пометить исходящие сообщения собеседнику прочитанными (по входящему
@@ -199,14 +252,21 @@ mod tests {
         dir
     }
 
+    /// Тестовый стор на софтварном DEK-файле: реальный OS-keychain между
+    /// тестами общий, параллельные прогоны затирали бы DEK друг друга.
+    fn open_test(dir: &Path) -> HistoryStore {
+        open_with_provider(dir, Box::new(sealed::SoftwareKeyProvider::new(dir)))
+            .expect("open test store")
+    }
+
     #[test]
     fn append_list_and_read_receipt() {
         let dir = tmp_dir("basic");
         let peer = "aaaaaaaa-0000-0000-0000-000000000001";
-        let mut h = open(&dir).expect("open");
+        let mut h = open_test(&dir);
 
         h.append_outgoing(peer, "привет".into(), 1000).expect("out1");
-        h.append_incoming(peer, "о, привет".into(), 1100).expect("in1");
+        h.append_incoming(peer, "о, привет".into(), 1100, "env-test-1").expect("in1");
         h.append_outgoing(peer, "как сам?".into(), 1200).expect("out2");
 
         let msgs = h.list(peer);
@@ -234,15 +294,50 @@ mod tests {
         let dir = tmp_dir("reopen");
         let peer = "bbbbbbbb-0000-0000-0000-000000000002";
         {
-            let mut h = open(&dir).expect("open");
+            let mut h = open_test(&dir);
             h.append_outgoing(peer, "до перезапуска".into(), 5).expect("out");
         }
         // Перечитываем зашифрованный снапшот с диска.
-        let h2 = open(&dir).expect("reopen");
+        let h2 = open_test(&dir);
         let msgs = h2.list(peer);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].body, "до перезапуска");
         assert_eq!(h2.peers(), vec![peer.to_string()]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn envelope_watermark_dedups_redelivery() {
+        let dir = tmp_dir("watermark");
+        let peer = "cccccccc-0000-0000-0000-000000000003";
+        let mut h = open_test(&dir);
+
+        assert!(!h.is_envelope_seen(peer, "env-0001"));
+        let added = h
+            .append_incoming(peer, "привет".into(), 1000, "env-0001")
+            .expect("append");
+        assert!(added.is_some());
+        assert!(h.is_envelope_seen(peer, "env-0001"));
+        // Меньший id тоже считается увиденным (inbox идёт по возрастанию).
+        assert!(h.is_envelope_seen(peer, "env-0000"));
+        assert!(!h.is_envelope_seen(peer, "env-0002"));
+
+        // Повторная доставка того же конверта (креш до ack) не дублирует.
+        let dup = h
+            .append_incoming(peer, "привет".into(), 1000, "env-0001")
+            .expect("append dup");
+        assert!(dup.is_none());
+        assert_eq!(h.list(peer).len(), 1);
+
+        // Контрол-конверт: seen без записи в историю.
+        h.mark_envelope_seen(peer, "env-0002").expect("mark");
+        assert!(h.is_envelope_seen(peer, "env-0002"));
+        assert_eq!(h.list(peer).len(), 1);
+
+        // Watermark переживает переоткрытие снапшота.
+        let h2 = open_test(&dir);
+        assert!(h2.is_envelope_seen(peer, "env-0002"));
 
         let _ = fs::remove_dir_all(&dir);
     }

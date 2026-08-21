@@ -33,8 +33,10 @@ import {
 import {
   appendIncoming,
   appendOutgoing,
+  isEnvelopeSeen,
   listMessages,
   listPeers,
+  markEnvelopeSeen,
   markRead,
   type StoredSecretMessage,
 } from '../../lib/host/secret-store.js'
@@ -153,8 +155,10 @@ export async function sendReadReceipt(peerUserId: string, uptoTs: number = Date.
   await sendEnvelope(peerUserId, enc)
 }
 
-/** Отправить «печатает» (эфемерно, в историю не пишется). */
+/** Отправить «печатает» (эфемерно, в историю не пишется). No-op без сессии —
+ *  нажатие клавиши не должно поднимать PQXDH-рукопожатие. */
 export async function sendTyping(peerUserId: string): Promise<void> {
+  if (!(await cryptoSessionExists(peerUserId))) return
   const enc = await encryptFrame(peerUserId, { kind: 'typing', ts: Date.now() })
   await sendEnvelope(peerUserId, enc)
 }
@@ -179,16 +183,26 @@ async function drainOnce(): Promise<DrainResult> {
   // Строго последовательно: prekey-конверт устанавливает сессию для следующих.
   for (const env of envelopes) {
     try {
+      // Уже обработанный конверт (креш между показом и ack — аудит M-10):
+      // НЕ расшифровываем повторно — ratchet уже продвинулся, decrypt упал бы
+      // и конверт завис до retention. Просто ack.
+      if (await isEnvelopeSeen(env.fromUserId, env.id)) {
+        ackIds.push(env.id)
+        continue
+      }
+
       const plaintext = await cryptoDecrypt(env.fromUserId, env.ciphertext, env.msgType)
       const frame = SecretFrameSchema.parse(JSON.parse(plaintext))
       if (frame.kind === 'text') {
-        await appendIncoming(env.fromUserId, frame.body, frame.ts)
-        touchedPeers.add(env.fromUserId)
+        const added = await appendIncoming(env.fromUserId, frame.body, frame.ts, env.id)
+        if (added) touchedPeers.add(env.fromUserId)
       } else if (frame.kind === 'read') {
         const changed = await markRead(env.fromUserId, frame.ts)
+        await markEnvelopeSeen(env.fromUserId, env.id)
         if (changed > 0) touchedPeers.add(env.fromUserId)
       } else {
         useSecretSession.getState().setTyping(env.fromUserId, frame.ts)
+        await markEnvelopeSeen(env.fromUserId, env.id)
       }
       ackIds.push(env.id)
     } catch (err) {

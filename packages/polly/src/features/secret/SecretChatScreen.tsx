@@ -21,6 +21,7 @@ import {
   secretMessagesKey,
   sendReadReceipt,
   sendSecretText,
+  sendTyping,
 } from './api.js'
 import { KeyVerification } from './KeyVerification.js'
 import { SecretBubble } from './SecretBubble.js'
@@ -216,7 +217,7 @@ export function SecretChatScreen({ peerUserId, onBack }: { peerUserId: string; o
       </div>
 
       {/* composer */}
-      <SecretComposer disabled={keyChanged} onSend={handleSend} />
+        <SecretComposer disabled={keyChanged} onSend={handleSend} peerUserId={peerUserId} />
 
       {showVerify && (
         <KeyVerification
@@ -275,13 +276,34 @@ function SecretMessageList({
   )
 }
 
-function SecretComposer({ disabled, onSend }: { disabled: boolean; onSend: (text: string) => void }) {
+// «Печатает» уходит не чаще раза в 3 с за набор (как в облачном Composer).
+const TYPING_THROTTLE_MS = 3_000
+
+function SecretComposer({
+  disabled,
+  onSend,
+  peerUserId,
+}: {
+  disabled: boolean
+  onSend: (text: string) => void
+  peerUserId: string
+}) {
   const [value, setValue] = useState('')
+  const lastTypingSentRef = useRef(0)
   const submit = () => {
     const v = value.trim()
     if (!v || disabled) return
     onSend(v)
     setValue('')
+  }
+  // Typing-конверт (T-103): шифрованный, эфемерный. sendTyping сам no-op без
+  // установленной сессии — набор текста не должен поднимать PQXDH.
+  const notifyTyping = () => {
+    if (disabled || !value.trim()) return
+    const now = Date.now()
+    if (now - lastTypingSentRef.current < TYPING_THROTTLE_MS) return
+    lastTypingSentRef.current = now
+    void sendTyping(peerUserId).catch(() => { /* контрол-конверт — best effort */ })
   }
   return (
     <div className="px-3 py-2 shrink-0 kd-safe-bottom">
@@ -294,7 +316,7 @@ function SecretComposer({ disabled, onSend }: { disabled: boolean; onSend: (text
         <Icon.Lock size={18} className="text-kd-text-mute shrink-0" />
         <input
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => { setValue(e.target.value); notifyTyping() }}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() } }}
           disabled={disabled}
           placeholder={disabled ? 'сверьте ключ, чтобы продолжить' : 'напиши…'}

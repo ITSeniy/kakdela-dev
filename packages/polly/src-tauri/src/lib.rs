@@ -95,6 +95,8 @@ pub fn run() {
             commands::crypto_clear_session,
             commands::secret_history_append_outgoing,
             commands::secret_history_append_incoming,
+            commands::secret_history_is_envelope_seen,
+            commands::secret_history_mark_envelope_seen,
             commands::secret_history_mark_read,
             commands::secret_history_list,
             commands::secret_history_peers,

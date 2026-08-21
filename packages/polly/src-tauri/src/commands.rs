@@ -199,7 +199,9 @@ pub fn secret_history_append_outgoing(
     with_history(&app, &state, |h| h.append_outgoing(&peer_user_id, body, sent_at_ms))
 }
 
-/// Записать входящее сообщение (после расшифровки крипто-ядром).
+/// Записать входящее сообщение (после расшифровки крипто-ядром) и запомнить
+/// конверт. None — конверт уже обработан (повторная доставка, M-10): дубликат
+/// в историю не пишется.
 #[tauri::command]
 pub fn secret_history_append_incoming(
     app: AppHandle,
@@ -207,8 +209,35 @@ pub fn secret_history_append_incoming(
     peer_user_id: String,
     body: String,
     sent_at_ms: u64,
-) -> Result<StoredMessage, CmdError> {
-    with_history(&app, &state, |h| h.append_incoming(&peer_user_id, body, sent_at_ms))
+    envelope_id: String,
+) -> Result<Option<StoredMessage>, CmdError> {
+    with_history(&app, &state, |h| {
+        h.append_incoming(&peer_user_id, body, sent_at_ms, &envelope_id)
+    })
+}
+
+/// Обработан ли уже этот конверт (дедуп повторной доставки, M-10).
+#[tauri::command]
+pub fn secret_history_is_envelope_seen(
+    app: AppHandle,
+    state: State<HistoryState>,
+    peer_user_id: String,
+    envelope_id: String,
+) -> Result<bool, CmdError> {
+    with_history(&app, &state, |h| {
+        Ok(h.is_envelope_seen(&peer_user_id, &envelope_id))
+    })
+}
+
+/// Запомнить конверт обработанным без записи в историю (read/typing).
+#[tauri::command]
+pub fn secret_history_mark_envelope_seen(
+    app: AppHandle,
+    state: State<HistoryState>,
+    peer_user_id: String,
+    envelope_id: String,
+) -> Result<(), CmdError> {
+    with_history(&app, &state, |h| h.mark_envelope_seen(&peer_user_id, &envelope_id))
 }
 
 /// Пометить исходящие прочитанными по входящему read-конверту (галочки в UI).
