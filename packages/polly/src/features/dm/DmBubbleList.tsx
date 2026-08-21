@@ -553,6 +553,9 @@ function DmBubble({
   )
 }
 
+// Потолок авто-подгрузки истории при deep-link #msg: (аудит M-6).
+const MAX_HASH_WALK_PAGES = 40
+
 export function DmBubbleList({
   channelId, currentUserId, memberMap, channelMap, otherUser, peerReadUpTo, pending,
   onMention, onEdit, onDelete, onRetry, onReply, onAddReaction, onRemoveReaction,
@@ -739,12 +742,14 @@ export function DmBubbleList({
     }
   }, [messages])
 
-  // Deep-link `#msg:<id>` (переход из Inbox/поиска): когда сообщение
-  // появляется в DOM — скроллим к нему и подсвечиваем kd-flash.
+  // Deep-link `#msg:<id>` (переход из Inbox/поиска). Если сообщения нет в
+  // загруженных страницах — идём назад по истории (аудит M-6, бюджет
+  // MAX_HASH_WALK_PAGES). После прыжка хеш стираем: иначе каждое новое
+  // сообщение снова уносило бы скролл к цели.
+  const hashWalkRef = useRef({ channelId: '', remaining: MAX_HASH_WALK_PAGES })
   useEffect(() => {
-    function jumpToHashTarget() {
-      const hash = window.location.hash
-      const m = /^#msg:([0-9a-f-]+)$/i.exec(hash)
+    function jumpToHashTarget(): boolean {
+      const m = /^#msg:([0-9a-f-]+)$/i.exec(window.location.hash)
       if (!m) return false
       const el = document.querySelector(`[data-message-id="${m[1]}"]`)
       if (!el) return false
@@ -753,14 +758,27 @@ export function DmBubbleList({
         el.classList.add('kd-flash')
         el.addEventListener('animationend', () => el.classList.remove('kd-flash'), { once: true })
       }, 100)
+      history.replaceState(null, '', window.location.pathname + window.location.search)
       return true
     }
     if (messages.length === 0) return undefined
-    jumpToHashTarget()
-    const handler = () => { jumpToHashTarget() }
+
+    const tryJumpOrWalk = () => {
+      if (!/^#msg:[0-9a-f-]+$/i.test(window.location.hash)) return
+      if (jumpToHashTarget()) return
+      if (hashWalkRef.current.remaining <= 0) return
+      hashWalkRef.current.remaining -= 1
+      if (hasNextPage && !isFetchingNextPage) void fetchNextPage()
+    }
+    if (hashWalkRef.current.channelId !== channelId) {
+      hashWalkRef.current = { channelId, remaining: MAX_HASH_WALK_PAGES }
+    }
+
+    tryJumpOrWalk()
+    const handler = () => { tryJumpOrWalk() }
     window.addEventListener('hashchange', handler)
     return () => window.removeEventListener('hashchange', handler)
-  }, [channelId, messages.length])
+  }, [channelId, messages.length, hasNextPage, isFetchingNextPage, fetchNextPage])
 
   const firstUnreadIndex = useMemo(() => {
     if (!snapshotReadAt) return -1

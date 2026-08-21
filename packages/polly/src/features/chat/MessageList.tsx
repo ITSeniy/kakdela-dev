@@ -67,6 +67,11 @@ function UnreadDivider() {
 
 // Системная строка по центру (вступление участника, день рождения) —
 // приглушённая, не «пузырь».
+
+// Потолок авто-подгрузки истории при deep-link #msg: (~40 страниц × 50
+// сообщений): чужой/удалённый id не должен гонять пагинацию вечно.
+const MAX_HASH_WALK_PAGES = 40
+
 function SystemLine({ message, name }: { message: IMessage; name: string }) {
   if (message.system?.kind === 'birthday') {
     return (
@@ -282,12 +287,15 @@ export function MessageList({
     }
   }, [messages])
 
-  // Deep-link `#msg:<id>` (например, переход из Inbox): когда сообщение
-  // появляется в DOM — скроллим к нему и подсвечиваем kd-flash.
+  // Deep-link `#msg:<id>` (переход из Inbox/поиска/тостов). Если сообщения
+  // ещё нет в DOM — идём назад по страницам истории, пока не найдём
+  // (аудит M-6; потолок MAX_HASH_WALK_PAGES, чтобы чужой/удалённый id не
+  // гонял пагинацию вечно). После успешного прыжка хеш стираем — иначе
+  // каждое новое сообщение снова уносило бы скролл к цели.
+  const hashWalkRef = useRef({ channelId: '', remaining: MAX_HASH_WALK_PAGES })
   useEffect(() => {
-    function jumpToHashTarget() {
-      const hash = window.location.hash
-      const m = /^#msg:([0-9a-f-]+)$/i.exec(hash)
+    function jumpToHashTarget(): boolean {
+      const m = /^#msg:([0-9a-f-]+)$/i.exec(window.location.hash)
       if (!m) return false
       const el = document.querySelector(`[data-message-id="${m[1]}"]`)
       if (!el) return false
@@ -296,15 +304,29 @@ export function MessageList({
         el.classList.add('kd-flash')
         el.addEventListener('animationend', () => el.classList.remove('kd-flash'), { once: true })
       }, 100)
+      history.replaceState(null, '', window.location.pathname + window.location.search)
       return true
     }
     if (messages.length === 0) return undefined
-    // Сначала пробуем сразу, потом подписываемся на hashchange.
-    jumpToHashTarget()
-    const handler = () => { jumpToHashTarget() }
+
+    const tryJumpOrWalk = () => {
+      if (!/^#msg:[0-9a-f-]+$/i.test(window.location.hash)) return
+      if (jumpToHashTarget()) return
+      // Цели нет в загруженных страницах — подгружаем историю назад.
+      if (hashWalkRef.current.remaining <= 0) return
+      hashWalkRef.current.remaining -= 1
+      if (hasNextPage && !isFetchingNextPage) void fetchNextPage()
+    }
+    // Смена канала сбрасывает бюджет прохода: хеш мог остаться от прошлого.
+    if (hashWalkRef.current.channelId !== channelId) {
+      hashWalkRef.current = { channelId, remaining: MAX_HASH_WALK_PAGES }
+    }
+
+    tryJumpOrWalk()
+    const handler = () => { tryJumpOrWalk() }
     window.addEventListener('hashchange', handler)
     return () => window.removeEventListener('hashchange', handler)
-  }, [channelId, messages.length])
+  }, [channelId, messages.length, hasNextPage, isFetchingNextPage, fetchNextPage])
 
   const firstUnreadIndex = useMemo(() => {
     if (!snapshotReadAt) return -1

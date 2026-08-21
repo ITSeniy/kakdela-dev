@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useLocation, useRoute } from 'wouter'
 
@@ -17,7 +17,7 @@ import { useRecents } from '../features/navigation/recents.js'
 import { WelcomeScreen } from '../features/onboarding/WelcomeScreen.js'
 import { SearchScreen } from '../features/search/SearchScreen.js'
 import { ServerRail } from '../features/servers/ServerRail.js'
-import { getServerDetail, listServers } from '../features/servers/api.js'
+import { getChannel, getServerDetail, listServers } from '../features/servers/api.js'
 import { ThreadPanel } from '../features/threads/ThreadPanel.js'
 import { useThreadUi } from '../features/threads/store.js'
 import { useNotifyTriggers } from '../features/notify/triggers.js'
@@ -284,6 +284,7 @@ function ChannelArea({
   channelId: string | null
   memberListVisible: boolean
 }) {
+  const [, navigate] = useLocation()
   // ChannelArea отдельным компонентом — `useQuery` принимает `enabled`, но мы
   // ещё хотим избегать сборки JSX без нужды; так оба условия в одном месте.
   const { data: detail } = useQuery({
@@ -292,6 +293,29 @@ function ChannelArea({
     enabled: serverId !== null,
     staleTime: 30_000,
   })
+
+  // Неизвестный для detail канал — это тред (тред-каналы в сайдбар не
+  // попадают). Deep-link из инбокса/поиска/тоста на сообщение треда
+  // редиректим в родительский канал с открытой панелью треда, сохраняя
+  // #msg:-хеш (аудит M-3). Один запрос метаданных на пару сервер:канал.
+  const threadTriedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!serverId || !channelId || !detail) return
+    if (detail.channels.some((c) => c.id === channelId)) return
+    const key = `${serverId}:${channelId}`
+    if (threadTriedRef.current === key) return
+    threadTriedRef.current = key
+    let cancelled = false
+    getChannel(channelId)
+      .then((ch) => {
+        if (cancelled) return
+        if (ch.serverId !== serverId || ch.kind !== 'text' || !ch.parentChannelId) return
+        useThreadUi.getState().open(channelId, ch.parentChannelId)
+        navigate(`/servers/${serverId}/channels/${ch.parentChannelId}${window.location.hash}`, { replace: true })
+      })
+      .catch(() => { /* канал удалён — остаёмся на заглушке */ })
+    return () => { cancelled = true }
+  }, [serverId, channelId, detail, navigate])
 
   if (!serverId || !channelId) {
     return (

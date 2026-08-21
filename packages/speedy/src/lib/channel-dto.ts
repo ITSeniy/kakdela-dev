@@ -13,6 +13,9 @@ export const CHANNEL_DTO_COLS = {
   topic:          channels.topic,
   position:       channels.position,
   parentChannelId: channels.parentChannelId,
+  // Признак треда для клиента: deep-link на сообщение треда (из инбокса/
+  // поиска/тостов) без этого поля не может понять, что канал — тред.
+  parentMessageId: channels.parentMessageId,
   slowModeSec:    channels.slowModeSec,
   autoDeleteSec:  channels.autoDeleteSec,
   isDefault:      channels.isDefault,

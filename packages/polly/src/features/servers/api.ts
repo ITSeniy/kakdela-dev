@@ -95,6 +95,11 @@ export async function getChannelStats(channelId: string): Promise<{ messageCount
   return apiFetch<{ messageCount: number }>(`/api/channels/${channelId}/stats`)
 }
 
+/** Метаданные одного канала (в т.ч. треда — parentChannelId/parentMessageId). */
+export async function getChannel(channelId: string): Promise<Channel> {
+  return apiFetch<Channel>(`/api/channels/${channelId}`)
+}
+
 /** Серверный профиль: свой per-server ник/аватар. null = сброс к глобальному. */
 export async function patchMyMemberProfile(
   serverId: string,
