@@ -10,8 +10,7 @@ import {
   type SharedServer,
 } from '@kakdela/ginzu/api-types'
 
-import { hashPassword, verifyPassword } from '../auth/passwords.js'
-import { dmChannels, memberRoles, serverMembers, serverRoles, servers, sessions, users } from '../db/schema.js'
+import { dmChannels, memberRoles, serverMembers, serverRoles, servers, users } from '../db/schema.js'
 import { db } from '../lib/db.js'
 import { forbidden, notFound } from '../lib/permissions.js'
 import { presence } from '../presence/store.js'
@@ -166,8 +165,9 @@ export const usersRoutes: FastifyPluginAsyncZod = async (app) => {
   // ───── PATCH /api/me ─────
   //
   // Обновление *своего* профиля. Username и email менять нельзя — это
-  // identity. Password change требует currentPassword и при успехе сносит
-  // все прочие сессии, чтобы старые токены не пережили смену пароля.
+  // identity. Смена пароля вынесена в POST /api/auth/password: там она
+  // заодно перевыпускает сессию вызывающего устройства, чтобы оно не
+  // разлогинилось (T-068).
   app.patch(
     '/me',
     {
@@ -189,24 +189,12 @@ export const usersRoutes: FastifyPluginAsyncZod = async (app) => {
       const user = userRows[0]
       if (!user) throw forbidden('user not found')
 
-      // Password change — проверяем текущий, обновляем хеш, удаляем все
-      // прочие сессии.  Этот блок отдельно, чтобы избежать частичных
-      // успехов: если password неверный — никаких других полей не трогаем.
-      if (body.newPassword) {
-        if (!body.currentPassword) {
-          return reply.code(400).send({ error: { code: 'missing-current-password', message: 'currentPassword is required' } })
-        }
-        const ok = await verifyPassword(user.passwordHash, body.currentPassword)
-        if (!ok) {
-          return reply.code(400).send({ error: { code: 'invalid-current-password', message: 'invalid current password' } })
-        }
-        const newHash = await hashPassword(body.newPassword)
-        await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, userId))
-        // Сносим ВСЕ сессии — старые refresh-токены, выданные до смены
-        // пароля, не должны переживать ротацию. Клиент получит новый
-        // refresh при следующем /api/auth/refresh; до тех пор продолжает
-        // работать по access-токену (15 мин TTL).
-        await db.delete(sessions).where(eq(sessions.userId, userId))
+      // Пароль меняется отдельным эндпоинтом (POST /api/auth/password):
+      // только там можно корректно перевыпустить сессию вызывающему.
+      if (body.newPassword !== undefined || body.currentPassword !== undefined) {
+        return reply.code(400).send({
+          error: { code: 'use-password-endpoint', message: 'change password via POST /api/auth/password' },
+        })
       }
 
       const updates: Partial<typeof users.$inferInsert> = {}

@@ -170,10 +170,20 @@ export function ChatScreen({ serverId, channelId, memberListVisible }: ChatScree
   })
   const roles = useMemo(() => allRoles.filter((r) => !r.isEveryone), [allRoles])
 
-  async function handleSend(content: string, attachments: Attachment[] = [], gif?: GifEmbed, sticker?: StickerRef, clip?: ClipEmbed) {
+  async function handleSend(
+    content: string,
+    attachments: Attachment[] = [],
+    gif?: GifEmbed,
+    sticker?: StickerRef,
+    clip?: ClipEmbed,
+    // Ретрай передаёт исходные replyId/nonce: тот же nonce делает повтор
+    // идемпотентным (сервер вернёт уже созданное сообщение, дубля не будет).
+    opts?: { replyId?: string | null; nonce?: string },
+  ) {
     if (!user) return
-    const nonce = crypto.randomUUID()
-    const replyId = replyTo?.id ?? null
+    const fromComposer = opts === undefined
+    const nonce = opts?.nonce ?? crypto.randomUUID()
+    const replyId = opts?.replyId !== undefined ? opts.replyId : (replyTo?.id ?? null)
     const optimistic: PendingMessage = {
       id: `pending:${nonce}`,
       channelId,
@@ -190,7 +200,9 @@ export function ChatScreen({ serverId, channelId, memberListVisible }: ChatScree
       _nonce: nonce,
     }
     setPending((p) => [...p, optimistic])
-    setReplyTo(null)
+    // Сбрасываем replyTo только у отправки из композера — ретрай старого
+    // сообщения не должен трогать текущий ответ в композере.
+    if (fromComposer) setReplyTo(null)
 
     try {
       const spoilerIds = attachments.filter((a) => a.spoiler).map((a) => a.id)
@@ -234,7 +246,14 @@ export function ChatScreen({ serverId, channelId, memberListVisible }: ChatScree
     const target = pending.find((p) => p._nonce === nonce)
     if (!target) return
     setPending((p) => p.filter((x) => x._nonce !== nonce))
-    void handleSend(target.content, target.attachments)
+    void handleSend(
+      target.content,
+      target.attachments,
+      target.gif ?? undefined,
+      target.sticker ?? undefined,
+      target.clip ?? undefined,
+      { replyId: target.replyToId, nonce },
+    )
   }
 
   async function handleEdit(id: string, newContent: string) {

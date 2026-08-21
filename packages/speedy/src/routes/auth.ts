@@ -233,6 +233,61 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
     },
   )
 
+  // ───── POST /api/auth/password ─────
+  //
+  // Смена пароля (T-068). Текущий пароль проверяем, хеш обновляем, ВСЕ
+  // старые сессии сгорают — но вызывающему устройству сразу выдаём свежую
+  // сессию: оно остаётся залогиненным, прочие устройства честно
+  // разлогиниваются. Раньше удалялись все сессии без замены, и устройство,
+  // сменившее пароль, вылетало через 15 минут по истечении access-токена.
+  app.post(
+    '/auth/password',
+    {
+      preHandler: app.authenticate,
+      config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+      schema: {
+        body: z.object({
+          currentPassword: z.string().min(1),
+          newPassword: z.string().min(6),
+        }),
+        response: {
+          200: AuthResponseSchema,
+          400: ErrorBodySchema,
+          401: ErrorBodySchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.authUser!.id
+      const rows = await db.select().from(users).where(eq(users.id, userId)).limit(1)
+      const user = rows[0]
+      if (!user) {
+        return reply.code(401).send({ error: { code: 'unauthorized', message: 'missing bearer token' } })
+      }
+
+      const ok = await verifyPassword(user.passwordHash, req.body.currentPassword)
+      if (!ok) {
+        return reply.code(400).send({ error: { code: 'invalid-current-password', message: 'invalid current password' } })
+      }
+
+      const newHash = await hashPassword(req.body.newPassword)
+      await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, userId))
+
+      // Старые refresh-токены не переживают смену пароля...
+      await db.delete(sessions).where(eq(sessions.userId, userId))
+      // ...а это устройство получает новую сессию прямо в ответе.
+      const { ipAddress, userAgent } = clientMeta(req)
+      const { accessToken, refresh } = await issueSession(userId, ipAddress, userAgent)
+
+      void reply.setCookie(REFRESH_COOKIE, refresh.token, refreshCookieOptions(refresh.expiresAt))
+      return reply.code(200).send({
+        accessToken,
+        user: publicUser(user),
+        ...(isNativeClient(req) ? { refreshToken: refresh.token } : {}),
+      })
+    },
+  )
+
   // ───── POST /api/auth/refresh ─────
   app.post(
     '/auth/refresh',

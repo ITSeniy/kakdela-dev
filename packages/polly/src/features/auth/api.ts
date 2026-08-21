@@ -82,6 +82,24 @@ export async function logout(): Promise<void> {
   await clearSession()
 }
 
+/**
+ * Смена пароля (T-068): прочие сессии сгорают, а ТЕКУЩЕЕ устройство получает
+ * свежую сессию прямо в ответе и остаётся залогиненным. Возвращает
+ * обновлённого пользователя.
+ */
+export async function changePassword(currentPassword: string, newPassword: string): Promise<User> {
+  const data = await apiFetch<{ accessToken: string; user: User; refreshToken?: string }>(
+    '/api/auth/password',
+    {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    },
+  )
+  await persistSession(data.user, data.accessToken, data.refreshToken)
+  useAuthStore.getState().setSession(data.user, data.accessToken)
+  return data.user
+}
+
 export async function initAuth(): Promise<void> {
   useAuthStore.getState().setStatus('loading')
 

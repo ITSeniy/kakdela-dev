@@ -470,10 +470,19 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
       })
   }, [channelId, lastMessageId, queryClient])
 
-  async function handleSend(content: string, attachments: Attachment[] = [], gif?: GifEmbed, sticker?: StickerRef, clip?: ClipEmbed) {
+  async function handleSend(
+    content: string,
+    attachments: Attachment[] = [],
+    gif?: GifEmbed,
+    sticker?: StickerRef,
+    clip?: ClipEmbed,
+    // Ретрай передаёт исходные replyId/nonce — идемпотентность против дублей.
+    opts?: { replyId?: string | null; nonce?: string },
+  ) {
     if (!user) return
-    const nonce = crypto.randomUUID()
-    const replyId = replyTo?.id ?? null
+    const fromComposer = opts === undefined
+    const nonce = opts?.nonce ?? crypto.randomUUID()
+    const replyId = opts?.replyId !== undefined ? opts.replyId : (replyTo?.id ?? null)
     const optimistic: PendingMessage = {
       id: `pending:${nonce}`,
       channelId,
@@ -490,7 +499,7 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
       _nonce: nonce,
     }
     setPending((p) => [...p, optimistic])
-    setReplyTo(null)
+    if (fromComposer) setReplyTo(null)
 
     try {
       const spoilerIds = attachments.filter((a) => a.spoiler).map((a) => a.id)
@@ -525,7 +534,14 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
     const target = pending.find((p) => p._nonce === nonce)
     if (!target) return
     setPending((p) => p.filter((x) => x._nonce !== nonce))
-    void handleSend(target.content, target.attachments)
+    void handleSend(
+      target.content,
+      target.attachments,
+      target.gif ?? undefined,
+      target.sticker ?? undefined,
+      target.clip ?? undefined,
+      { replyId: target.replyToId, nonce },
+    )
   }
 
   async function handleEdit(id: string, newContent: string) {

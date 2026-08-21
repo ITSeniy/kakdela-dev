@@ -677,11 +677,12 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
               error: { code: 'client-nonce-reused', message: 'client_nonce already used in another channel' },
             })
           }
-          const exReplyTo = ex.replyToId
-            ? (await resolveReplies([ex.replyToId])).get(ex.replyToId) ?? null
-            : null
-          const exAttachments = (await loadAttachmentsForMessages([ex.id])).get(ex.id) ?? []
-          return reply.code(201).send(serializeMessage(ex, [], exReplyTo, exAttachments))
+          // Полная гидрация (реакции/цитата/вложения/тред/опрос/встреча):
+          // ретрай по таймауту должен вернуть ТОТ ЖЕ DTO, что и первая
+          // отправка, иначе клиент вставит «голую» копию без карточки опроса.
+          const hydrated = (await hydrateMessages([ex], userId))[0]
+          if (!hydrated) throw new Error('hydrateMessages returned no rows for existing message')
+          return reply.code(201).send(hydrated)
         }
       }
 

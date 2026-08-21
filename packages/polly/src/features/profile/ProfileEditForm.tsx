@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { User, UserProfile } from '@kakdela/ginzu/api-types'
 
 import { ApiError } from '../../lib/api.js'
+import { changePassword } from '../auth/api.js'
 import { useAuthStore } from '../auth/store.js'
 import { uploadAttachment } from '../files/upload.js'
 import { Avatar } from '../../components/Avatar.js'
@@ -27,7 +28,6 @@ const INPUT_CLS =
 export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormProps) {
   const queryClient = useQueryClient()
   const updateSession = useAuthStore((s) => s.setSession)
-  const accessToken = useAuthStore((s) => s.accessToken)
 
   const [displayName, setDisplayName] = useState(profile.displayName)
   const [customStatus, setCustomStatus] = useState(profile.customStatus ?? '')
@@ -61,7 +61,8 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
   async function saveAvatar(url: string | null) {
     const updated = await patchMe({ avatarUrl: url })
     setAvatarUrl(url)
-    if (accessToken) updateSession(updated, accessToken)
+    const token = useAuthStore.getState().accessToken
+    if (token) updateSession(updated, token)
     void queryClient.invalidateQueries({ queryKey: ['user-profile', updated.id] })
     void queryClient.invalidateQueries({ queryKey: ['members'] })
   }
@@ -115,6 +116,17 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
 
     setSaving(true)
     try {
+      // Пароль — отдельным эндпоинтом (POST /api/auth/password): сервер
+      // сжигает старые сессии и перевыпускает сессию этому устройству,
+      // так что смена пароля больше не разлогинивает текущее окно.
+      let updated: User = profile
+      if (newPassword) {
+        updated = await changePassword(currentPassword, newPassword)
+        setNewPassword('')
+        setConfirmPassword('')
+        setCurrentPassword('')
+      }
+
       const updates: Parameters<typeof patchMe>[0] = {}
       if (displayName !== profile.displayName) updates.displayName = displayName
       const nextStatus = customStatus.trim() === '' ? null : customStatus
@@ -124,16 +136,13 @@ export function ProfileEditForm({ profile, onSaved, onCancel }: ProfileEditFormP
       if (timezone !== profile.timezone) updates.timezone = timezone
       if (birthday !== profile.birthday) updates.birthday = birthday
       if (bannerUrl !== profile.bannerUrl) updates.bannerUrl = bannerUrl
-      if (newPassword) {
-        updates.currentPassword = currentPassword
-        updates.newPassword = newPassword
+
+      if (Object.keys(updates).length > 0) {
+        updated = await patchMe(updates)
+        // Токен мог смениться в changePassword — берём актуальный из стора.
+        const token = useAuthStore.getState().accessToken
+        if (token) updateSession(updated, token)
       }
-
-      const updated = await patchMe(updates)
-
-      // Auth store ожидает (user, accessToken). Текущий access всё ещё валиден —
-      // PATCH /me не ротирует access-токен. Refresh уйдёт на следующем тике.
-      if (accessToken) updateSession(updated, accessToken)
       void queryClient.invalidateQueries({ queryKey: ['user-profile', updated.id] })
       void queryClient.invalidateQueries({ queryKey: ['members'] })
 

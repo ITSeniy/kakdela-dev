@@ -4,6 +4,7 @@ import { type InfiniteData, useQuery, useQueryClient } from '@tanstack/react-que
 import type {
   Attachment,
   Channel,
+  ClipEmbed,
   GifEmbed,
   MemberPublic,
   Message,
@@ -90,10 +91,19 @@ export function ThreadPanel({ threadId, parentChannelId, serverId }: ThreadPanel
   })
   const roles = useMemo(() => allRoles.filter((r) => !r.isEveryone), [allRoles])
 
-  async function handleSend(content: string, attachments: Attachment[] = [], gif?: GifEmbed, sticker?: StickerRef) {
+  async function handleSend(
+    content: string,
+    attachments: Attachment[] = [],
+    gif?: GifEmbed,
+    sticker?: StickerRef,
+    clip?: ClipEmbed,
+    // Ретрай передаёт исходные replyId/nonce — идемпотентность против дублей.
+    opts?: { replyId?: string | null; nonce?: string },
+  ) {
     if (!user) return
-    const nonce = crypto.randomUUID()
-    const replyId = replyTo?.id ?? null
+    const fromComposer = opts === undefined
+    const nonce = opts?.nonce ?? crypto.randomUUID()
+    const replyId = opts?.replyId !== undefined ? opts.replyId : (replyTo?.id ?? null)
     const optimistic: PendingMessage = {
       id: `pending:${nonce}`,
       channelId: threadId,
@@ -105,11 +115,12 @@ export function ThreadPanel({ threadId, parentChannelId, serverId }: ThreadPanel
       attachments,
       gif: gif ?? null,
       sticker: sticker ?? null,
+      clip: clip ?? null,
       _pending: 'sending',
       _nonce: nonce,
     }
     setPending((p) => [...p, optimistic])
-    setReplyTo(null)
+    if (fromComposer) setReplyTo(null)
 
     try {
       const sent = await sendMessage(threadId, {
@@ -119,6 +130,7 @@ export function ThreadPanel({ threadId, parentChannelId, serverId }: ThreadPanel
         ...(attachments.length > 0 ? { attachments: attachments.map((a) => a.id) } : {}),
         ...(gif ? { gif } : {}),
         ...(sticker ? { sticker } : {}),
+        ...(clip ? { clip } : {}),
       })
       queryClient.setQueryData<MsgCache>(['messages', threadId], (old) => {
         if (!old || old.pages.length === 0) return old
@@ -143,7 +155,14 @@ export function ThreadPanel({ threadId, parentChannelId, serverId }: ThreadPanel
     const target = pending.find((p) => p._nonce === nonce)
     if (!target) return
     setPending((p) => p.filter((x) => x._nonce !== nonce))
-    void handleSend(target.content, target.attachments)
+    void handleSend(
+      target.content,
+      target.attachments,
+      target.gif ?? undefined,
+      target.sticker ?? undefined,
+      target.clip ?? undefined,
+      { replyId: target.replyToId, nonce },
+    )
   }
 
   async function handleEdit(id: string, newContent: string) {
