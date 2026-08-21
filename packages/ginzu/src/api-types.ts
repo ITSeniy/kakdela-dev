@@ -1000,16 +1000,18 @@ export type FinalizeResponse = z.infer<typeof FinalizeResponseSchema>
 
 export const AUDIT_ACTIONS = [
   'channel.create', 'channel.update', 'channel.delete',
-  'member.promote', 'member.demote', 'member.kick',
+  'member.promote', 'member.demote', 'member.kick', 'member.role.set',
   'invite.create',  'invite.revoke',
   'emoji.create',   'emoji.delete',
+  'role.create',    'role.update',    'role.delete',
+  'server.update',  'server.transfer',
 ] as const
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS)
 export type AuditAction = z.infer<typeof AuditActionSchema>
 
 export const AuditTargetTypeSchema = z.enum([
-  'channel', 'user', 'invite', 'emoji', 'server',
+  'channel', 'user', 'invite', 'emoji', 'role', 'server',
 ])
 export type AuditTargetType = z.infer<typeof AuditTargetTypeSchema>
 

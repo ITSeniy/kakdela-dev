@@ -495,6 +495,15 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
 
       void broadcastToServer(serverId, { t: 'server.update', server: dto })
 
+      audit.log({
+        serverId,
+        actorId:    userId,
+        action:     'server.update',
+        targetType: 'server',
+        targetId:   serverId,
+        metadata:   { changed: Object.keys(updates) },
+      })
+
       return reply.code(200).send(dto)
     },
   )
@@ -732,12 +741,10 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
           .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.userId, actorId)))
       })
 
-      // Используем существующие enum-значения (member.promote/user), чтобы не
-      // вводить миграцию ради нового action; пометка transfer — в metadata.
       audit.log({
         serverId,
         actorId,
-        action:     'member.promote',
+        action:     'server.transfer',
         targetType: 'user',
         targetId:   targetId,
         metadata:   { transfer: 'owner' },

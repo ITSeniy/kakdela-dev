@@ -84,7 +84,11 @@ export class WsClient {
       }
       const result = ServerEventSchema.safeParse(parsed)
       if (!result.success) {
-        console.warn('[ws] invalid server event', result.error.issues, parsed)
+        // Тело события не логируем — там бывает контент сообщений; только тип.
+        const t = typeof parsed === 'object' && parsed !== null && 't' in parsed
+          ? String((parsed as { t: unknown }).t)
+          : 'unknown'
+        console.warn(`[ws] invalid server event (t=${t})`, result.error.issues)
         return
       }
       this.handleEvent(result.data)

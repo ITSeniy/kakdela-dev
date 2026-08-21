@@ -17,6 +17,7 @@ import {
 import { hasPermission, sanitizePermissions } from '@kakdela/ginzu/permissions'
 
 import { memberRoles, serverRoles } from '../db/schema.js'
+import { audit } from '../lib/audit.js'
 import { db } from '../lib/db.js'
 import {
   assertMember,
@@ -105,6 +106,14 @@ export const rolesRoutes: FastifyPluginAsyncZod = async (app) => {
         })
         .returning()
       const role = inserted[0]!
+      audit.log({
+        serverId,
+        actorId:    userId,
+        action:     'role.create',
+        targetType: 'role',
+        targetId:   role.id,
+        metadata:   { name: role.name, permissions: perms },
+      })
       void broadcastToServer(serverId, { t: 'role.update', serverId })
       return reply.code(201).send(serializeRole(role))
     },
@@ -155,6 +164,14 @@ export const rolesRoutes: FastifyPluginAsyncZod = async (app) => {
       }
 
       const updated = await db.update(serverRoles).set(updates).where(eq(serverRoles.id, role.id)).returning()
+      audit.log({
+        serverId:   role.serverId,
+        actorId:    userId,
+        action:     'role.update',
+        targetType: 'role',
+        targetId:   role.id,
+        metadata:   { name: role.name, changed: Object.keys(updates) },
+      })
       void broadcastToServer(role.serverId, { t: 'role.update', serverId: role.serverId })
       return reply.code(200).send(serializeRole(updated[0]!))
     },
@@ -178,6 +195,14 @@ export const rolesRoutes: FastifyPluginAsyncZod = async (app) => {
       if (!canManageRolePosition(ctx, role.position)) throw forbidden('эта роль выше вашей')
 
       await db.delete(serverRoles).where(eq(serverRoles.id, role.id)) // assignments — cascade
+      audit.log({
+        serverId:   role.serverId,
+        actorId:    userId,
+        action:     'role.delete',
+        targetType: 'role',
+        targetId:   role.id,
+        metadata:   { name: role.name },
+      })
       void broadcastToServer(role.serverId, { t: 'role.update', serverId: role.serverId })
       return reply.code(204).send(null)
     },
@@ -232,6 +257,15 @@ export const rolesRoutes: FastifyPluginAsyncZod = async (app) => {
         if (finalSet.size > 0) {
           await tx.insert(memberRoles).values([...finalSet].map((roleId) => ({ serverId, userId: targetId, roleId })))
         }
+      })
+
+      audit.log({
+        serverId,
+        actorId,
+        action:     'member.role.set',
+        targetType: 'user',
+        targetId,
+        metadata:   { roleIds: [...finalSet] },
       })
 
       void broadcastToServer(serverId, { t: 'member.roles', serverId, userId: targetId })

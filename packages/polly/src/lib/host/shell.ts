@@ -13,7 +13,11 @@ export async function openExternal(url: string): Promise<void> {
       await mod.open(url)
       return
     } catch (err) {
-      console.warn('[host/shell] tauri-plugin-shell unavailable, falling back', err)
+      // Фолбэк на window.open сознательно убран: он загрузил бы ссылку
+      // внутри webview доверенного окна приложения. Лучше не открыть вовсе,
+      // чем открыть удалённый контент в trusted-контексте.
+      console.warn('[host/shell] cannot open external link in Tauri:', url, err)
+      return
     }
   }
   window.open(url, '_blank', 'noopener,noreferrer')

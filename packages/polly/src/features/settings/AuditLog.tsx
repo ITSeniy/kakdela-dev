@@ -11,16 +11,22 @@ interface AuditLogProps {
 }
 
 const ACTION_LABEL: Record<AuditAction, string> = {
-  'channel.create':  'создал канал',
-  'channel.update':  'изменил канал',
-  'channel.delete':  'удалил канал',
-  'member.promote':  'повысил',
-  'member.demote':   'понизил',
-  'member.kick':     'выгнал',
-  'invite.create':   'создал инвайт',
-  'invite.revoke':   'отозвал инвайт',
-  'emoji.create':    'добавил эмодзи',
-  'emoji.delete':    'удалил эмодзи',
+  'channel.create':   'создал канал',
+  'channel.update':   'изменил канал',
+  'channel.delete':   'удалил канал',
+  'member.promote':   'повысил',
+  'member.demote':    'понизил',
+  'member.kick':      'выгнал',
+  'member.role.set':  'назначил роли',
+  'invite.create':    'создал инвайт',
+  'invite.revoke':    'отозвал инвайт',
+  'emoji.create':     'добавил эмодзи',
+  'emoji.delete':     'удалил эмодзи',
+  'role.create':      'создал роль',
+  'role.update':      'изменил роль',
+  'role.delete':      'удалил роль',
+  'server.update':    'изменил сервер',
+  'server.transfer':  'передал владение сервером',
 }
 
 const ALL_ACTIONS = Object.keys(ACTION_LABEL) as AuditAction[]
@@ -58,6 +64,17 @@ function describeTarget(entry: AuditEntry): string {
     case 'member.promote':
     case 'member.demote':
     case 'member.kick':
+    case 'member.role.set':
+      return strOrNull(m.displayName) ?? '?'
+    case 'role.create':
+    case 'role.update':
+    case 'role.delete':
+      return strOrNull(m.name) ?? '?'
+    case 'server.update': {
+      const changed = Array.isArray(m.changed) ? m.changed.filter((v): v is string => typeof v === 'string') : []
+      return changed.length > 0 ? changed.join(', ') : '?'
+    }
+    case 'server.transfer':
       return strOrNull(m.displayName) ?? '?'
   }
 }

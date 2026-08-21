@@ -635,9 +635,11 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
         body: SendMessageRequestSchema,
         response: {
           201: MessageSchema,
+          400: ErrorBodySchema,
           401: ErrorBodySchema,
           403: ErrorBodySchema,
           404: ErrorBodySchema,
+          409: ErrorBodySchema,
         },
       },
     },
@@ -648,6 +650,16 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
 
       const access = await assertCanAccessChannel(userId, channelId)
 
+      // В voice-канал текст не пишем: там живут только звонки и демка.
+      const kindRows = await db
+        .select({ kind: channels.kind })
+        .from(channels)
+        .where(eq(channels.id, channelId))
+        .limit(1)
+      if (kindRows[0]?.kind === 'voice') {
+        return reply.code(400).send({ error: { code: 'voice-channel', message: 'cannot post messages in a voice channel' } })
+      }
+
       // Idempotency: return existing message if same nonce+author
       if (clientNonce) {
         const existing = await db
@@ -657,6 +669,14 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
           .limit(1)
         if (existing[0]) {
           const ex = existing[0]
+          // Уникальный индекс (author, nonce) — глобальный. Тот же nonce в
+          // другом канале создать нельзя; раньше молча возвращали старое
+          // сообщение из чужого канала, теперь — явный конфликт.
+          if (ex.channelId !== channelId) {
+            return reply.code(409).send({
+              error: { code: 'client-nonce-reused', message: 'client_nonce already used in another channel' },
+            })
+          }
           const exReplyTo = ex.replyToId
             ? (await resolveReplies([ex.replyToId])).get(ex.replyToId) ?? null
             : null

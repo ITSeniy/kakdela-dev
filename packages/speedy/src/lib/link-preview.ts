@@ -70,6 +70,14 @@ function isPrivateV6(ip: string): boolean {
   if (mapped?.[1]) return isPrivateV4(mapped[1])
   if (/^f[cd]/.test(addr)) return true               // ULA fc00::/7
   if (/^fe[89ab]/.test(addr)) return true            // link-local fe80::/10
+  // IPv6 transition-механизмы: IPv4 зашит внутрь адреса, и через шлюз
+  // NAT64/6to4 пакет может уехать в интранет мимо v4-блок-листа.
+  if (/^64:ff9b(:|$)/.test(addr)) return true        // NAT64 64:ff9b::/96 (+ :1::/48)
+  if (/^2002:/.test(addr)) return true               // 6to4 2002::/16
+  if (/^2001:/.test(addr)) {                         // Teredo 2001::/32
+    const second = addr.split(':')[1] ?? ''
+    if (second === '' || /^0+$/.test(second)) return true
+  }
   return false
 }
 

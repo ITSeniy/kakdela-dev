@@ -6,14 +6,16 @@ import { db } from './db.js'
 // явный list документирует, что вообще логируется).
 export const AUDIT_ACTIONS = [
   'channel.create', 'channel.update', 'channel.delete',
-  'member.promote', 'member.demote', 'member.kick',
+  'member.promote', 'member.demote', 'member.kick', 'member.role.set',
   'invite.create',  'invite.revoke',
   'emoji.create',   'emoji.delete',
+  'role.create',    'role.update',    'role.delete',
+  'server.update',  'server.transfer',
 ] as const
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 
 export const AUDIT_TARGET_TYPES = [
-  'channel', 'user', 'invite', 'emoji', 'server',
+  'channel', 'user', 'invite', 'emoji', 'role', 'server',
 ] as const
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number]
 

@@ -267,6 +267,13 @@
       "when": 1783320319926,
       "tag": "0037_colorful_warpath",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787313856265,
+      "tag": "0038_kind_quasar",
+      "breakpoints": true
     }
   ]
 }

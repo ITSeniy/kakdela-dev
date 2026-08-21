@@ -99,10 +99,9 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
       const inviteCode = rawCode.toLowerCase().replace(/[^a-z0-9]/g, '')
 
       // Atomically claim the invite — same guard as POST /api/invites/:code/accept.
-      // Registration and invite claim happen together: if the user insert fails we
-      // roll back nothing (invite use_count was already incremented).  For a
-      // friends-only app with 15-20 users this is an acceptable trade-off; a full
-      // transactional approach would require wrapping everything in a DB transaction.
+      // Registration and invite claim happen together; if the user insert fails
+      // with a uniqueness conflict we roll the counter back below, so a known
+      // taken username can't be used to burn someone's single-use invite.
       const claimedInvite = await db
         .update(invites)
         .set({ useCount: sql`${invites.useCount} + 1` })
@@ -144,10 +143,17 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
         inserted = row
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        if (msg.includes('users_username_unique')) {
-          return reply.code(409).send({ error: { code: 'username-taken', message: 'username already in use' } })
-        }
-        if (msg.includes('users_email_unique')) {
+        if (msg.includes('users_username_unique') || msg.includes('users_email_unique')) {
+          // Компенсация: инвайт был «сожжён» инкрементом до INSERT юзера.
+          // Откатываем счётчик, иначе зная занятый username можно исчерпать
+          // одноразовый инвайт чужим запросом.
+          await db
+            .update(invites)
+            .set({ useCount: sql`GREATEST(${invites.useCount} - 1, 0)` })
+            .where(eq(invites.code, inviteCode))
+          if (msg.includes('users_username_unique')) {
+            return reply.code(409).send({ error: { code: 'username-taken', message: 'username already in use' } })
+          }
           return reply.code(409).send({ error: { code: 'email-taken', message: 'email already in use' } })
         }
         throw err

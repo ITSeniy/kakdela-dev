@@ -44,9 +44,26 @@ function PreviewImage({ src, alt, onOpen }: { src: string; alt: string; onOpen: 
 }
 
 /** Встраиваемый плеер (YouTube): превью-кадр с ▶, по клику — inline iframe. */
+const EMBED_HOSTS = new Set([
+  'www.youtube.com',
+  'youtube.com',
+  'www.youtube-nocookie.com',
+  'youtube-nocookie.com',
+])
+
+function isEmbeddable(url: string): boolean {
+  try {
+    return EMBED_HOSTS.has(new URL(url).hostname)
+  } catch {
+    return false
+  }
+}
+
 function VideoEmbed({ preview }: { preview: LinkPreview }) {
   const [playing, setPlaying] = useState(false)
   const site = preview.siteName || 'видео'
+  const embedUrl = preview.embedUrl
+  const embedOk = typeof embedUrl === 'string' && isEmbeddable(embedUrl)
   return (
     <div className="mt-1 border-l-[3px] border-kd-accent/50 bg-kd-panel-alt rounded-r-kd pl-2.5 pr-3 py-2 max-w-[440px] min-w-0">
       <div className="text-[10px] font-mono text-kd-text-mute truncate">{site}</div>
@@ -64,11 +81,15 @@ function VideoEmbed({ preview }: { preview: LinkPreview }) {
         className="mt-1.5 rounded-kd overflow-hidden bg-black max-w-full"
         style={{ width: 400, maxWidth: '100%', aspectRatio: '16 / 9' }}
       >
-        {playing && preview.embedUrl ? (
+        {playing && embedOk ? (
           <iframe
-            src={`${preview.embedUrl}?autoplay=1`}
+            src={`${embedUrl}?autoplay=1`}
             title={preview.title ?? 'video'}
             className="w-full h-full"
+            // Песочница: скрипты YouTube работают в его же origin, но фрейм
+            // не может навигировать верхнее окно и слать формы. Хост embedUrl
+            // дополнительно проверен allowlist'ом выше.
+            sandbox="allow-scripts allow-same-origin allow-popups allow-presentation"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
             allowFullScreen
           />

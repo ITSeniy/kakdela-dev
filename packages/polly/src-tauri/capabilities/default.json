@@ -20,7 +20,8 @@
       "allow": [
         { "url": "https://**" },
         { "url": "http://**" },
-        { "url": "ms-settings:**" }
+        { "url": "ms-settings:privacy-microphone" },
+        { "url": "ms-settings:notifications" }
       ]
     }
   ]

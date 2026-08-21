@@ -20,12 +20,14 @@ export const fileStatusEnum = pgEnum('file_status', ['pending', 'ready', 'failed
 export const mentionTypeEnum = pgEnum('mention_type', ['user', 'everyone', 'here'])
 export const auditActionEnum = pgEnum('audit_action', [
   'channel.create', 'channel.update', 'channel.delete',
-  'member.promote', 'member.demote', 'member.kick',
+  'member.promote', 'member.demote', 'member.kick', 'member.role.set',
   'invite.create',  'invite.revoke',
   'emoji.create',   'emoji.delete',
+  'role.create',    'role.update',    'role.delete',
+  'server.update',  'server.transfer',
 ])
 export const auditTargetTypeEnum = pgEnum('audit_target_type', [
-  'channel', 'user', 'invite', 'emoji', 'server',
+  'channel', 'user', 'invite', 'emoji', 'role', 'server',
 ])
 
 export const users = pgTable('users', {

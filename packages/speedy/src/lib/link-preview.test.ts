@@ -15,6 +15,25 @@ describe('isBlockedIp — SSRF блок-лист', () => {
     }
   })
 
+  it('блокирует IPv6 transition-диапазоны (NAT64/6to4/Teredo)', () => {
+    for (const ip of [
+      '64:ff9b::7f00:1',        // NAT64 well-known, внутри 127.0.0.1
+      '64:ff9b:1::1',           // NAT64 local-use
+      '2002:7f00:1::1',         // 6to4, внутри 127.0.0.1
+      '2001::1',                // Teredo (сжатая форма)
+      '2001:0:0:0:0:0:0:1',     // Teredo (развёрнутая форма)
+      '2001:0000:4136:e378:8000:63bf:3fff:fdd2', // Teredo-адрес целиком
+    ]) {
+      expect(isBlockedIp(ip), ip).toBe(true)
+    }
+  })
+
+  it('не путает Teredo с обычными глобальными 2001::/16', () => {
+    for (const ip of ['2001:4860:4860::8888', '2001:db8::1', '2606:2800:220:1:248:1893:25c8:1946']) {
+      expect(isBlockedIp(ip), ip).toBe(false)
+    }
+  })
+
   it('пропускает публичные адреса', () => {
     for (const ip of ['8.8.8.8', '1.1.1.1', '93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946']) {
       expect(isBlockedIp(ip), ip).toBe(false)
