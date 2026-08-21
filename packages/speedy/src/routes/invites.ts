@@ -18,27 +18,8 @@ import { env } from '../env.js'
 import { audit } from '../lib/audit.js'
 import { db } from '../lib/db.js'
 import { assertPermission } from '../lib/permissions.js'
+import { attachUserToServer } from '../ws/attach.js'
 import { broadcastToChannel, broadcastToServer } from '../ws/broadcast.js'
-import { registry } from '../ws/registry.js'
-
-/**
- * Hot-attach живых соединений свежевступившего участника на сервер и все его
- * каналы. Подписки выдаются на hello — без этого новый участник не получит
- * ни одного события по серверу (msg.new, presence, voice.*, role.update…)
- * до пересоздания сокета.
- */
-async function attachUserToServer(userId: string, serverId: string): Promise<void> {
-  const conns = registry.forUser(userId)
-  if (conns.length === 0) return
-  const chRows = await db
-    .select({ id: channels.id })
-    .from(channels)
-    .where(eq(channels.serverId, serverId))
-  for (const conn of conns) {
-    registry.subscribeServer(conn, serverId)
-    for (const ch of chRows) registry.subscribeChannel(conn, ch.id)
-  }
-}
 
 /**
  * Системное сообщение «участник присоединился» в канал по умолчанию сервера

@@ -50,6 +50,9 @@ export type ServerEvent =
   | { t: 'thread.archive'; parentChannelId: string; threadChannelId: string; archivedAt: string }
   // Имя/иконка/баннер сервера изменились — клиент инвалидирует detail и рельсу.
   | { t: 'server.update'; server: Server }
+  // Жёсткое удаление сервера: клиенты убирают его из рельсы и уходят с
+  // открытого канала (аудит 2026-08 M-9).
+  | { t: 'server.delete'; serverId: string }
   | { t: 'channel.create'; serverId: string; channel: Channel }
   | { t: 'channel.update'; serverId: string; channel: Channel }
   | { t: 'channel.delete'; serverId: string; channelId: string }
@@ -177,6 +180,9 @@ export const ServerEventSchema = z.discriminatedUnion('t', [
     archivedAt: z.string(),
   }),
   z.object({ t: z.literal('server.update'), server: ServerSchema }),
+  // Жёсткое удаление сервера: клиенты убирают его из рельсы и уходят с
+  // открытого канала (аудит 2026-08 M-9).
+  z.object({ t: z.literal('server.delete'), serverId: uuid }),
   z.object({ t: z.literal('channel.create'), serverId: uuid, channel: ChannelSchema }),
   z.object({ t: z.literal('channel.update'), serverId: uuid, channel: ChannelSchema }),
   z.object({ t: z.literal('channel.delete'), serverId: uuid, channelId: uuid }),

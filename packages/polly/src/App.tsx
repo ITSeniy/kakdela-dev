@@ -88,6 +88,17 @@ export function App() {
   // открыт, — уходим на корень сервера, чтобы не остаться в несуществующем чате.
   useEffect(() => {
     return wsClient.on((event) => {
+      // Жёсткое удаление сервера (аудит M-9): убираем из рельсы и кэша,
+      // уводим с открытого канала удалённого сервера. '/' Shell разрулит
+      // сам — первый оставшийся сервер или WelcomeScreen.
+      if (event.t === 'server.delete') {
+        void queryClient.invalidateQueries({ queryKey: ['servers'] })
+        void queryClient.removeQueries({ queryKey: ['server', event.serverId] })
+        if (locationRef.current.includes(event.serverId)) {
+          navigate('/', { replace: true })
+        }
+        return
+      }
       if (event.t === 'server.update') {
         void queryClient.invalidateQueries({ queryKey: ['server', event.server.id] })
         void queryClient.invalidateQueries({ queryKey: ['servers'] })

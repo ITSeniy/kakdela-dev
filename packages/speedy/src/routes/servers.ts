@@ -34,6 +34,7 @@ import {
 } from '../lib/permissions.js'
 import { loadMemberRoleInfo } from '../lib/roles.js'
 import { presence } from '../presence/store.js'
+import { attachUserToServer, detachUserFromServer, dropServerSubscriptions, serverChannelIds } from '../ws/attach.js'
 import { broadcastToServer } from '../ws/broadcast.js'
 import { registry } from '../ws/registry.js'
 
@@ -120,6 +121,11 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
 
         return row
       })
+
+      // Создатель тоже участник: hot-attach его живых соединений на новый
+      // сервер и каналы (аудит 2026-08 M-7) — иначе до реконнекта он не
+      // получит ни member.join первого приглашённого, ни presence, ни voice.*.
+      await attachUserToServer(userId, server.id)
 
       return reply.code(201).send({ id: server.id, name: server.name, iconUrl: server.iconUrl ?? null })
     },
@@ -534,12 +540,23 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
 
       await assertRole(userId, serverId, ['owner'])
 
+      // Id каналов нужны ДО каскада (аудит M-9): и для очистки подписок,
+      // и для GC файлов — после удаления строк их неоткуда взять.
+      const channelIds = await serverChannelIds(serverId)
+
       // Файлы всех каналов сервера — ДО каскадного удаления (аудит M-6):
       // после него строки files исчезнут, ключи S3-объектов не найти.
       await purgeFilesForServer(serverId, req.log)
 
+      // Событие — пока подписчики ещё в registry; у всех клиентов сервер
+      // исчезнет из рельсы без F5, открытый канал закроется.
+      void broadcastToServer(serverId, { t: 'server.delete', serverId })
+
       const result = await db.delete(servers).where(eq(servers.id, serverId)).returning({ id: servers.id })
       if (!result[0]) throw notFound('server-not-found', 'server not found')
+
+      // Подписки всех соединений на несуществующий serverId больше не нужны.
+      dropServerSubscriptions(serverId, channelIds)
 
       // audit_log тоже каскадно удалится — отдельный entry уже не нужен.
       return reply.code(204).send(null)
@@ -636,6 +653,13 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
         .delete(serverMembers)
         .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.userId, userId)))
 
+      // Остальные участники тоже должны узнать о выходе без рефеча.
+      void broadcastToServer(serverId, { t: 'member.leave', serverId, userId })
+
+      // Отвязываем WS-подписки покинувшего (аудит M-8): без этого он
+      // продолжает получать msg.new/presence сервера до дисконнекта.
+      await detachUserFromServer(userId, serverId)
+
       return reply.code(204).send(null)
     },
   )
@@ -689,6 +713,9 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
       })
 
       void broadcastToServer(serverId, { t: 'member.leave', serverId, userId: targetId })
+
+      // Кикнутый тоже отвязывается от подписок (аудит M-8).
+      await detachUserFromServer(targetId, serverId)
 
       return reply.code(204).send(null)
     },

@@ -42,6 +42,45 @@ class Registry {
     }
   }
 
+  /**
+   * Отвязать ВСЕ соединения пользователя от сервера и его каналов
+   * (leave/kick, аудит 2026-08 M-8): бывший участник не должен продолжать
+   * получать msg.new/presence/voice.* , пока жив его сокет.
+   */
+  unsubscribeFromServer(userId: string, serverId: string, channelIds: readonly string[]): void {
+    const conns = this.byUser.get(userId)
+    if (!conns) return
+    for (const conn of conns) {
+      if (!conn.subscribedServers.has(serverId)) continue
+      conn.subscribedServers.delete(serverId)
+      this.removeFromMap(this.byServer, serverId, conn)
+      for (const channelId of channelIds) {
+        if (!conn.subscribedChannels.has(channelId)) continue
+        conn.subscribedChannels.delete(channelId)
+        this.removeFromMap(this.byChannel, channelId, conn)
+      }
+    }
+  }
+
+  /**
+   * Отвязать все соединения всех подписчиков сервера (жёсткое удаление
+   * сервера). Id каналов обязательны — после каскада их неоткуда взять.
+   */
+  dropServer(serverId: string, channelIds: readonly string[]): void {
+    const conns = this.byServer.get(serverId)
+    if (!conns) return
+    // Копия: removeFromMap мутирует тот же set, который итерируем.
+    for (const conn of [...conns]) {
+      conn.subscribedServers.delete(serverId)
+      this.removeFromMap(this.byServer, serverId, conn)
+      for (const channelId of channelIds) {
+        if (!conn.subscribedChannels.has(channelId)) continue
+        conn.subscribedChannels.delete(channelId)
+        this.removeFromMap(this.byChannel, channelId, conn)
+      }
+    }
+  }
+
   forChannel(channelId: string): Connection[] {
     const set = this.byChannel.get(channelId)
     return set ? Array.from(set) : []
