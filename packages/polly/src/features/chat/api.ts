@@ -1,4 +1,4 @@
-import type { EventDefinition, EventRsvp, GifEmbed, Message, MessagesPage, PinnedMessagesResponse, PollDefinition, StickerRef } from '@kakdela/ginzu/api-types'
+import type { ClipEmbed, EventDefinition, EventRsvp, GifEmbed, Message, MessagesPage, PinnedMessagesResponse, PollDefinition, StickerRef } from '@kakdela/ginzu/api-types'
 
 import { apiFetch } from '../../lib/api.js'
 
@@ -22,6 +22,7 @@ export interface SendMessageBody {
   spoilerAttachments?: string[]
   gif?: GifEmbed
   sticker?: StickerRef
+  clip?: ClipEmbed
   poll?: PollDefinition
   event?: EventDefinition
 }

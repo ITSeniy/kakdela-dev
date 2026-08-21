@@ -244,8 +244,12 @@ export const messages = pgTable(
     // GIF-вложение (GifEmbed): {gifUrl, mp4Url, previewUrl, width, height}.
     // null — обычное сообщение. Хранится структурно, чтобы рендерить <video>.
     gif: jsonb('gif'),
-    // Стикер-вложение (StickerRef-снимок): {stickerId, name, imageUrl, w, h}.
+    // Стикер-вложение (StickerRef-снимок): {stickerId, name, imageUrl, w, h,
+    // source}. source различает кастомный стикер сервера и стикер Klipy.
     sticker: jsonb('sticker'),
+    // Клип Klipy (ClipEmbed-снимок): {mp4Url, gifUrl, previewUrl, w, h, title}.
+    // null — обычное сообщение. Видео СО звуком (в отличие от gif).
+    clip: jsonb('clip'),
     // Опрос (PollDefinition): {question, options: string[]}. null — обычное
     // сообщение. Голоса — в poll_votes; счётчики собираются на чтении.
     poll: jsonb('poll'),

@@ -11,6 +11,7 @@ import {
   PinnedMessagesResponseSchema,
   SendMessageRequestSchema,
   type Attachment,
+  type ClipEmbed,
   type EventDefinition,
   type EventView,
   type ForwardedRef,
@@ -54,6 +55,7 @@ const MSG_COLS = {
   system:        messages.system,
   gif:           messages.gif,
   sticker:       messages.sticker,
+  clip:          messages.clip,
   poll:          messages.poll,
   event:         messages.event,
 }
@@ -251,6 +253,7 @@ interface MsgRow {
   system: unknown
   gif: unknown
   sticker: unknown
+  clip: unknown
   poll: unknown
   event: unknown
 }
@@ -290,6 +293,8 @@ function serializeMessage(
     gif: (row.gif as GifEmbed | null) ?? null,
     // Стикер (jsonb-снимок StickerRef); null — обычное сообщение.
     sticker: (row.sticker as StickerRef | null) ?? null,
+    // Клип Klipy (jsonb-снимок ClipEmbed); null — обычное сообщение.
+    clip: (row.clip as ClipEmbed | null) ?? null,
     // Опрос: собранный PollView (гидрация в loadPollsForMessages).
     poll,
     // Встреча: собранный EventView (гидрация в loadEventsForMessages).
@@ -637,7 +642,7 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
     },
     async (req, reply) => {
       const { channelId } = req.params
-      const { content, replyToId, clientNonce, attachments: attachmentIds, spoilerAttachments, gif, sticker, poll, event } = req.body
+      const { content, replyToId, clientNonce, attachments: attachmentIds, spoilerAttachments, gif, sticker, clip, poll, event } = req.body
       const userId = req.authUser!.id
 
       const access = await assertCanAccessChannel(userId, channelId)
@@ -672,6 +677,7 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
           clientNonce: clientNonce ?? null,
           gif: gif ?? null,
           sticker: sticker ?? null,
+          clip: clip ?? null,
           poll: poll ?? null,
           event: event ?? null,
         })

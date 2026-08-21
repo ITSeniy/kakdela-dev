@@ -37,7 +37,6 @@ import { useFavorites } from '../favorites/api.js'
 const DATA = rawData as EmojiMartData
 
 const COLS = 8
-const CELL = 36 // высота ячейки, px
 const ROW = 38 // шаг ряда (ячейка + gap) — для резерва высоты несмонтированных секций
 const HEADER_H = 30 // высота sticky-заголовка категории, px
 const MAX_SEARCH = 90 // потолок результатов поиска, чтобы сетка оставалась лёгкой
@@ -314,9 +313,11 @@ interface EmojiPickerProps {
   onSelect: (token: string) => void
   /** Если задан — добавляется первая категория «Сервер» с этими emoji. */
   customEmoji?: ReadonlyArray<CustomEmoji>
+  /** Внутри вкладки общего пикера — без своей рамки/размера/поп-ина. */
+  embedded?: boolean
 }
 
-export function EmojiPicker({ onSelect, customEmoji }: EmojiPickerProps) {
+export function EmojiPicker({ onSelect, customEmoji, embedded = false }: EmojiPickerProps) {
   const [query, setQuery] = useState('')
   const [activeCat, setActiveCat] = useState('people')
 
@@ -507,7 +508,11 @@ export function EmojiPicker({ onSelect, customEmoji }: EmojiPickerProps) {
   }, [tabs, searching])
 
   return (
-    <div className="w-[352px] h-[380px] bg-kd-panel border border-kd-border rounded-kd shadow-kd-modal flex flex-col overflow-hidden kd-pop-in">
+    <div
+      className={embedded
+        ? 'flex-1 min-h-0 flex flex-col overflow-hidden'
+        : 'w-[352px] h-[380px] bg-kd-panel border border-kd-border rounded-kd shadow-kd-modal flex flex-col overflow-hidden kd-pop-in'}
+    >
       <div className="px-2 py-2 border-b border-kd-border bg-kd-panel-alt shrink-0">
         <div className="flex items-center gap-2 px-2 py-1.5 rounded bg-kd-bg border border-kd-border">
           <Icon.Search size={13} className="text-kd-text-mute shrink-0" />

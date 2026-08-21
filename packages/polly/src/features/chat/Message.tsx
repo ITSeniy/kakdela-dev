@@ -18,6 +18,7 @@ import { pinMessage, unpinMessage } from './api.js'
 import { AttachmentList } from './AttachmentView.js'
 import { addReminder } from '../reminders/store.js'
 import { EventCard } from './EventCard.js'
+import { ClipEmbed } from './ClipEmbed.js'
 import { GifEmbed } from './GifEmbed.js'
 import { PollCard } from './PollCard.js'
 import { StickerEmbed } from './StickerEmbed.js'
@@ -199,6 +200,7 @@ export function Message({
   const msgThread = 'thread' in message ? (message.thread ?? null) : null
   const msgGif = message.gif ?? null
   const msgSticker = message.sticker ?? null
+  const msgClip = message.clip ?? null
   const msgPoll = 'poll' in message ? (message.poll ?? null) : null
   const pollEl = msgPoll ? <PollCard messageId={message.id} poll={msgPoll} /> : null
   const msgEvent = 'event' in message ? (message.event ?? null) : null
@@ -530,11 +532,12 @@ export function Message({
             )}
           </div>
         </div>
-        {(msgAttachments.length > 0 || msgGif !== null || msgSticker !== null || msgPoll !== null || msgEvent !== null || msgThread !== null || reactionsEl !== null) && (
+        {(msgAttachments.length > 0 || msgGif !== null || msgSticker !== null || msgClip !== null || msgPoll !== null || msgEvent !== null || msgThread !== null || reactionsEl !== null) && (
           <div className="pl-11">
             {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} lightboxContext={lightboxContext} blur={nsfw} />}
             {msgGif && <GifEmbed gif={msgGif} />}
             {msgSticker && <StickerEmbed sticker={msgSticker} />}
+            {msgClip && <ClipEmbed clip={msgClip} />}
             {pollEl}
             {eventEl}
             <ThreadBadge />
@@ -577,6 +580,7 @@ export function Message({
           {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} lightboxContext={lightboxContext} blur={nsfw} />}
           {msgGif && <GifEmbed gif={msgGif} />}
           {msgSticker && <StickerEmbed sticker={msgSticker} />}
+          {msgClip && <ClipEmbed clip={msgClip} />}
           {pollEl}
           {eventEl}
           <ThreadBadge />
@@ -644,6 +648,7 @@ export function Message({
           {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} lightboxContext={lightboxContext} blur={nsfw} />}
           {msgGif && <GifEmbed gif={msgGif} />}
           {msgSticker && <StickerEmbed sticker={msgSticker} />}
+          {msgClip && <ClipEmbed clip={msgClip} />}
           {pollEl}
           {eventEl}
           <ThreadBadge />

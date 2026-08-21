@@ -1,7 +1,7 @@
 import React, { type ClipboardEvent, type DragEvent, type KeyboardEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import type { Attachment, CustomEmoji, GifEmbed, MemberPublic, Message, Role, StickerRef } from '@kakdela/ginzu/api-types'
+import type { Attachment, ClipEmbed, CustomEmoji, GifEmbed, MemberPublic, Message, Role, StickerRef } from '@kakdela/ginzu/api-types'
 
 import { Avatar } from '../../components/Avatar.js'
 import { Icon } from '../../components/Icon.js'
@@ -9,7 +9,8 @@ import { useIsMobile } from '../../app/useIsMobile.js'
 import { wsClient } from '../../lib/ws.js'
 import { useAuthStore } from '../auth/store.js'
 import { useChatPrefs } from '../settings/chatPrefs.js'
-import { getGiphyConfig } from '../giphy/api.js'
+import { getKlipyConfig } from '../klipy/api.js'
+import { useAllServerStickers } from '../stickers/api.js'
 import {
   MAX_ATTACHMENT_SIZE,
   UploadError,
@@ -28,9 +29,7 @@ import { VideoNoteOverlay } from './VideoNoteRecorder.js'
 import { VoiceRecorderBar } from './VoiceRecorder.js'
 import { useNoteRecorder } from './useNoteRecorder.js'
 
-const LazyEmojiPicker = React.lazy(() => import('./EmojiPicker.js'))
-const LazyGifPicker = React.lazy(() => import('../giphy/GifPicker.js'))
-const LazyStickerPicker = React.lazy(() => import('../stickers/StickerPicker.js'))
+const LazyMediaPicker = React.lazy(() => import('../media/MediaPicker.js'))
 
 const MAX_ATTACHMENTS = 10
 
@@ -63,7 +62,7 @@ interface ComposerProps {
   /** Показывать ли @everyone / @here в автокомплите (серверные каналы). */
   allowBroadcast?: boolean
   onCancelReply: () => void
-  onSend: (content: string, attachments: Attachment[], gif?: GifEmbed, sticker?: StickerRef) => void
+  onSend: (content: string, attachments: Attachment[], gif?: GifEmbed, sticker?: StickerRef, clip?: ClipEmbed) => void
 }
 
 const TYPING_THROTTLE_MS = 3_000
@@ -165,9 +164,10 @@ export function Composer({
   const [spoilered, setSpoilered] = useState<Set<string>>(() => new Set())
   const [isDragOver, setIsDragOver] = useState(false)
   const [warning, setWarning] = useState<string | null>(null)
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const [gifOpen, setGifOpen] = useState(false)
-  const [stickerOpen, setStickerOpen] = useState(false)
+  // Единый пикер медиа (эмодзи · gif · стикеры · клипы). mediaTab — с какой
+  // вкладки открыть (мобильный «+» может сразу вести на gif/стикеры).
+  const [mediaOpen, setMediaOpen] = useState(false)
+  const [mediaTab, setMediaTab] = useState<'emoji' | 'gifs' | 'stickers' | 'clips'>('emoji')
   const [pollOpen, setPollOpen] = useState(false)
   const [eventOpen, setEventOpen] = useState(false)
   // Мобильный bottom-sheet вложений: «+» на мобиле открывает его, а не пикер.
@@ -192,67 +192,56 @@ export function Composer({
     if (replyTo) taRef.current?.focus()
   }, [replyTo?.id])
 
-  const pickerContainerRef = useRef<HTMLDivElement>(null)
-  const gifContainerRef = useRef<HTMLDivElement>(null)
-  const stickerContainerRef = useRef<HTMLDivElement>(null)
+  const mediaContainerRef = useRef<HTMLDivElement>(null)
   const dragCounter = useRef(0)
 
-  // Включён ли GIF-пикер (есть ли GIPHY_API_KEY на сервере). Спрашиваем раз.
-  const { data: gifConfig } = useQuery({
-    queryKey: ['giphy-config'],
-    queryFn: getGiphyConfig,
+  // Возможности Klipy (есть ли ключ, какие типы доступны). Спрашиваем раз.
+  const { data: klipy } = useQuery({
+    queryKey: ['klipy-config'],
+    queryFn: getKlipyConfig,
     staleTime: Infinity,
   })
-  const gifEnabled = gifConfig?.enabled ?? false
+  const klipyConfig = klipy ?? { enabled: false, gifs: false, stickers: false, clips: false, memes: false }
+  // Кастомные стикеры сервера (для секции «Сервер» на вкладке стикеров).
+  const { stickers: serverStickers } = useAllServerStickers()
 
   function sendGif(gif: GifEmbed) {
     // Discord-style: гифка уходит сразу отдельным сообщением структурным
     // embed'ом (рендерится как <video>/<img>, кликабельна в лайтбокс). Текст
     // композера не трогаем.
     onSend('', [], gif)
-    setGifOpen(false)
+    setMediaOpen(false)
   }
 
   function sendSticker(sticker: StickerRef) {
     // Стикер уходит отдельным сообщением (снимок StickerRef). Текст не трогаем.
     onSend('', [], undefined, sticker)
-    setStickerOpen(false)
+    setMediaOpen(false)
+  }
+
+  function sendClip(clip: ClipEmbed) {
+    // Клип (видео со звуком) уходит отдельным сообщением. Текст не трогаем.
+    onSend('', [], undefined, undefined, clip)
+    setMediaOpen(false)
+  }
+
+  function openMedia(tab: 'emoji' | 'gifs' | 'stickers' | 'clips') {
+    setMediaTab(tab)
+    setMediaOpen(true)
   }
   const attachmentsRef = useRef<PendingAttachment[]>([])
   attachmentsRef.current = attachments
 
   useEffect(() => {
-    if (!gifOpen) return
+    if (!mediaOpen) return
     function handleMouseDown(e: MouseEvent) {
-      if (gifContainerRef.current && !gifContainerRef.current.contains(e.target as Node)) {
-        setGifOpen(false)
+      if (mediaContainerRef.current && !mediaContainerRef.current.contains(e.target as Node)) {
+        setMediaOpen(false)
       }
     }
     document.addEventListener('mousedown', handleMouseDown)
     return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [gifOpen])
-
-  useEffect(() => {
-    if (!stickerOpen) return
-    function handleMouseDown(e: MouseEvent) {
-      if (stickerContainerRef.current && !stickerContainerRef.current.contains(e.target as Node)) {
-        setStickerOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleMouseDown)
-    return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [stickerOpen])
-
-  useEffect(() => {
-    if (!pickerOpen) return
-    function handleMouseDown(e: MouseEvent) {
-      if (pickerContainerRef.current && !pickerContainerRef.current.contains(e.target as Node)) {
-        setPickerOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleMouseDown)
-    return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [pickerOpen])
+  }, [mediaOpen])
 
   // Вставляем emoji-токен на позицию курсора (или в конец, если фокус
   // потерян). Native unicode emoji приходят как `😀`, custom — как `:name:`.
@@ -819,50 +808,12 @@ export function Composer({
         />
         <div className="flex items-center gap-2 text-kd-text-mute shrink-0">
           {!isMobile && <span className="flex items-center h-5 text-[10px] font-mono opacity-70 select-none">md</span>}
-          {gifEnabled && !isMobile && (
-            <div className="relative" ref={gifContainerRef}>
-              <button
-                type="button"
-                title="гифки"
-                onClick={() => { setGifOpen((o) => !o); setPickerOpen(false); setStickerOpen(false) }}
-                className={`inline-flex items-center justify-center h-5 px-1.5 text-[10px] font-mono font-bold leading-none rounded ring-1 ring-inset transition-colors ${gifOpen ? 'ring-kd-accent text-kd-accent' : 'ring-kd-border hover:text-kd-text-soft'}`}
-              >
-                GIF
-              </button>
-              {gifOpen && (
-                <div className="absolute bottom-8 right-0 z-50 shadow-lg">
-                  <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
-                    <LazyGifPicker onSelect={sendGif} />
-                  </Suspense>
-                </div>
-              )}
-            </div>
-          )}
-          {!isMobile && (
-          <div className="relative" ref={stickerContainerRef}>
-            <button
-              type="button"
-              title="стикеры"
-              onClick={() => { setStickerOpen((o) => !o); setGifOpen(false); setPickerOpen(false) }}
-              className={`inline-flex items-center justify-center h-5 w-5 transition-colors ${stickerOpen ? 'text-kd-accent' : 'hover:text-kd-text-soft'}`}
-            >
-              <Icon.Sticker size={15} />
-            </button>
-            {stickerOpen && (
-              <div className="absolute bottom-8 right-0 z-50 shadow-lg">
-                <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
-                  <LazyStickerPicker onSelect={sendSticker} />
-                </Suspense>
-              </div>
-            )}
-          </div>
-          )}
           {channelId && !isMobile && (
             <>
               <button
                 type="button"
                 title="создать опрос"
-                onClick={() => { setPollOpen(true); setGifOpen(false); setPickerOpen(false); setStickerOpen(false) }}
+                onClick={() => { setPollOpen(true); setMediaOpen(false) }}
                 className={`inline-flex items-center justify-center h-5 w-5 transition-colors ${pollOpen ? 'text-kd-accent' : 'hover:text-kd-text-soft'}`}
               >
                 <Icon.BarChart size={15} />
@@ -870,31 +821,36 @@ export function Composer({
               <button
                 type="button"
                 title="назначить встречу"
-                onClick={() => { setEventOpen(true); setGifOpen(false); setPickerOpen(false); setStickerOpen(false) }}
+                onClick={() => { setEventOpen(true); setMediaOpen(false) }}
                 className={`inline-flex items-center justify-center h-5 w-5 transition-colors ${eventOpen ? 'text-kd-accent' : 'hover:text-kd-text-soft'}`}
               >
                 <Icon.Calendar size={15} />
               </button>
             </>
           )}
-          <div className="relative" ref={pickerContainerRef}>
+          {/* Единый пикер: эмодзи · гифки · стикеры · клипы (Klipy). Раньше это
+              были три отдельные кнопки/поповера — теперь одно окно с вкладками. */}
+          <div className="relative" ref={mediaContainerRef}>
             <button
               type="button"
-              title="эмодзи"
-              onClick={() => { setPickerOpen((o) => !o); setGifOpen(false); setStickerOpen(false) }}
-              className="inline-flex items-center justify-center h-5 w-5 hover:text-kd-text-soft transition-colors"
+              title="эмодзи · гифки · стикеры · клипы"
+              onClick={() => setMediaOpen((o) => !o)}
+              className={`inline-flex items-center justify-center transition-colors ${isMobile ? '' : 'h-5 w-5'} ${mediaOpen ? 'text-kd-accent' : 'hover:text-kd-text-soft'}`}
             >
-              <Icon.Smile size={15} />
+              <Icon.Smile size={isMobile ? 20 : 15} />
             </button>
-            {pickerOpen && (
-              <div className="absolute bottom-8 right-0 z-50 shadow-lg">
+            {mediaOpen && (
+              <div className={isMobile ? 'absolute bottom-full right-0 mb-2 z-50 shadow-lg' : 'absolute bottom-8 right-0 z-50 shadow-lg'}>
                 <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
-                  <LazyEmojiPicker
+                  <LazyMediaPicker
                     customEmoji={customEmoji}
-                    onSelect={(token) => {
-                      insertEmoji(token)
-                      setPickerOpen(false)
-                    }}
+                    serverStickers={serverStickers}
+                    klipy={klipyConfig}
+                    initialTab={mediaTab}
+                    onEmoji={insertEmoji}
+                    onGif={sendGif}
+                    onSticker={sendSticker}
+                    onClip={sendClip}
                   />
                 </Suspense>
               </div>
@@ -935,22 +891,6 @@ export function Composer({
         )}
       </div>
       )}
-      {/* Мобильные GIF/стикер-пикеры: кнопки живут в AttachSheet, поэтому
-          попап якорим на весь композер, а не на кнопку. */}
-      {isMobile && gifOpen && (
-        <div ref={gifContainerRef} className="absolute bottom-full left-2 right-2 mb-2 z-50 flex justify-center">
-          <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
-            <LazyGifPicker onSelect={sendGif} />
-          </Suspense>
-        </div>
-      )}
-      {isMobile && stickerOpen && (
-        <div ref={stickerContainerRef} className="absolute bottom-full left-2 right-2 mb-2 z-50 flex justify-center">
-          <Suspense fallback={<div className="p-3 text-[11px] text-kd-text-mute bg-kd-panel rounded-kd border border-kd-border">…</div>}>
-            <LazyStickerPicker onSelect={sendSticker} />
-          </Suspense>
-        </div>
-      )}
       <div className="mt-1.5 px-1 text-[10px] text-kd-text-mute flex items-center gap-2.5 empty:hidden">
         {channelId
           ? <TypingLine channelId={channelId} memberMap={memberMap} mobile={isMobile} />
@@ -964,14 +904,14 @@ export function Composer({
       </div>
       {attachOpen && (
         <AttachSheet
-          gifEnabled={gifEnabled}
+          gifEnabled={klipyConfig.gifs}
           showPollEvent={Boolean(channelId)}
           maxSelect={Math.max(0, MAX_ATTACHMENTS - attachments.length)}
           onClose={() => setAttachOpen(false)}
           onPickMedia={(items) => void attachDeviceMedia(items)}
           onPickFile={() => { setAttachOpen(false); void pickFiles() }}
-          onGif={() => { setAttachOpen(false); setGifOpen(true) }}
-          onSticker={() => { setAttachOpen(false); setStickerOpen(true) }}
+          onGif={() => { setAttachOpen(false); openMedia('gifs') }}
+          onSticker={() => { setAttachOpen(false); openMedia('stickers') }}
           onPoll={() => { setAttachOpen(false); setPollOpen(true) }}
           onEvent={() => { setAttachOpen(false); setEventOpen(true) }}
         />

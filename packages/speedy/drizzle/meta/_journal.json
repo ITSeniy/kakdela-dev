@@ -260,6 +260,13 @@
       "when": 1783301590798,
       "tag": "0036_minor_mathemanic",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1783320319926,
+      "tag": "0037_colorful_warpath",
+      "breakpoints": true
     }
   ]
 }

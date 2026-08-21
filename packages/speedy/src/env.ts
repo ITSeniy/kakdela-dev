@@ -39,11 +39,13 @@ const EnvSchema = z.object({
 
   EMOJI_PER_SERVER: z.coerce.number().int().positive().default(50),
 
-  // GIF-пикер (GIPHY-прокси). Не задан → фича выключена, кнопка GIF скрыта.
-  // Beta-ключ GIPHY = 100 запросов/час, поэтому ответы кэшируются в Redis.
-  GIPHY_API_KEY: z.string().optional(),
-  // Рейтинг отдаваемых гифок: g / pg / pg-13 / r. По умолчанию — мягкий.
-  GIPHY_RATING: z.enum(['g', 'pg', 'pg-13', 'r']).default('pg-13'),
+  // Медиа-библиотека Klipy (GIF / стикеры / клипы). Ключ живёт только на
+  // сервере (в клиент не отдаём). Не задан → фича выключена, кнопки скрыты.
+  // Dev-ключ ограничен, поэтому ответы кэшируются в Redis.
+  KLIPY_API_KEY: z.string().optional(),
+  // Фильтр контента Klipy: off / low / medium / high. Для дружеского сервера —
+  // medium (мягкий дефолт, как прежний pg-13 у GIPHY).
+  KLIPY_CONTENT_FILTER: z.enum(['off', 'low', 'medium', 'high']).default('medium'),
 
   // Превью ссылок (OG-метаданные). Сервер делает исходящие HTTP-запросы к
   // доменам из сообщений — кому это не нужно (приватность/закрытый периметр),

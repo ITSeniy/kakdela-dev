@@ -1,4 +1,4 @@
-import type { Attachment, GifEmbed, StickerRef } from '@kakdela/ginzu/api-types'
+import type { Attachment, ClipEmbed, GifEmbed, StickerRef } from '@kakdela/ginzu/api-types'
 
 export interface PendingMessage {
   id: string
@@ -11,6 +11,7 @@ export interface PendingMessage {
   attachments: Attachment[]
   gif?: GifEmbed | null
   sticker?: StickerRef | null
+  clip?: ClipEmbed | null
   _pending: 'sending' | 'error'
   _nonce: string
 }

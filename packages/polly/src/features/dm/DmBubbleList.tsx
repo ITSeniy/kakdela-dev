@@ -15,6 +15,7 @@ import { toast } from '../../components/toast/index.js'
 import { openExternal } from '../../lib/host/shell.js'
 import { pinMessage, unpinMessage } from '../chat/api.js'
 import { AttachmentList } from '../chat/AttachmentView.js'
+import { ClipEmbed } from '../chat/ClipEmbed.js'
 import { GifEmbed } from '../chat/GifEmbed.js'
 import { StickerEmbed } from '../chat/StickerEmbed.js'
 import { ContextMenu } from '../chat/ContextMenu.js'
@@ -275,6 +276,7 @@ function DmBubble({
   const msgAttachments = 'attachments' in message ? (message.attachments ?? []) : []
   const msgGif = message.gif ?? null
   const msgSticker = message.sticker ?? null
+  const msgClip = message.clip ?? null
   const msgPoll = 'poll' in message ? (message.poll ?? null) : null
   const msgEvent = 'event' in message ? (message.event ?? null) : null
 
@@ -465,6 +467,7 @@ function DmBubble({
           {msgAttachments.length > 0 && <AttachmentList attachments={msgAttachments} />}
           {msgGif && <GifEmbed gif={msgGif} />}
           {msgSticker && <StickerEmbed sticker={msgSticker} />}
+          {msgClip && <ClipEmbed clip={msgClip} />}
           {/* Сообщение из одной инвайт-ссылки — «служебный» текст прячем,
               смысл несёт карточка приглашения ниже. */}
           {message.content && !isInviteOnlyContent(message.content) && (

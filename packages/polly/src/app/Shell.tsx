@@ -239,10 +239,16 @@ export function Shell() {
                 </>
               : <>
                   <ChannelList serverId={serverId} activeChannelId={channelId} />
-                  <ChannelArea serverId={serverId} channelId={channelId} />
+                  <ChannelArea
+                    serverId={serverId}
+                    channelId={channelId}
+                    memberListVisible={showMemberList}
+                  />
                 </>
       }
-      {showMemberList && <MemberList serverId={serverId} className="hidden lg:flex" />}
+      {showMemberList && (
+        <MemberList serverId={serverId} channelId={channelId} className="hidden lg:flex" />
+      )}
       {showThreadPanel && openThreadId && threadParentId && (
         <ThreadPanel
           threadId={openThreadId}
@@ -272,9 +278,11 @@ function DmArea({
 function ChannelArea({
   serverId,
   channelId,
+  memberListVisible,
 }: {
   serverId: string | null
   channelId: string | null
+  memberListVisible: boolean
 }) {
   // ChannelArea отдельным компонентом — `useQuery` принимает `enabled`, но мы
   // ещё хотим избегать сборки JSX без нужды; так оба условия в одном месте.
@@ -305,5 +313,5 @@ function ChannelArea({
   if (channel.kind === 'voice') {
     return <VoiceScreen serverId={serverId} channel={channel} />
   }
-  return <ChatScreen serverId={serverId} channelId={channelId} />
+  return <ChatScreen serverId={serverId} channelId={channelId} memberListVisible={memberListVisible} />
 }

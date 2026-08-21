@@ -5,6 +5,7 @@ import { useLocation } from 'wouter'
 import type {
   Attachment,
   Channel,
+  ClipEmbed,
   DmSummary,
   GifEmbed,
   MemberPublic,
@@ -469,7 +470,7 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
       })
   }, [channelId, lastMessageId, queryClient])
 
-  async function handleSend(content: string, attachments: Attachment[] = [], gif?: GifEmbed, sticker?: StickerRef) {
+  async function handleSend(content: string, attachments: Attachment[] = [], gif?: GifEmbed, sticker?: StickerRef, clip?: ClipEmbed) {
     if (!user) return
     const nonce = crypto.randomUUID()
     const replyId = replyTo?.id ?? null
@@ -484,6 +485,7 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
       attachments,
       gif: gif ?? null,
       sticker: sticker ?? null,
+      clip: clip ?? null,
       _pending: 'sending',
       _nonce: nonce,
     }
@@ -500,6 +502,7 @@ export function DmScreen({ channelId, onBack }: DmScreenProps) {
         ...(spoilerIds.length > 0 ? { spoilerAttachments: spoilerIds } : {}),
         ...(gif ? { gif } : {}),
         ...(sticker ? { sticker } : {}),
+        ...(clip ? { clip } : {}),
       })
       queryClient.setQueryData<MsgCache>(['messages', channelId], (old) => {
         if (!old || old.pages.length === 0) return old

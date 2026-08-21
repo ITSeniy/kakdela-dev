@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { type InfiniteData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useLocation } from 'wouter'
 
-import type { Attachment, Channel, CustomEmoji, GifEmbed, MemberPublic, Message, MessagesPage, StickerRef } from '@kakdela/ginzu/api-types'
+import type { Attachment, Channel, ClipEmbed, GifEmbed, MemberPublic, Message, MessagesPage, StickerRef } from '@kakdela/ginzu/api-types'
 
 type MsgCache = InfiniteData<MessagesPage, string | undefined>
 
@@ -12,53 +11,43 @@ import { toast } from '../../components/toast/index.js'
 import { ApiError } from '../../lib/api.js'
 import { wsClient } from '../../lib/ws.js'
 import { useAuthStore } from '../auth/store.js'
-import { useViewScope } from '../navigation/viewScope.js'
 import { useServerEmoji } from '../emoji/api.js'
 import { useProfileUi } from '../profile/store.js'
 import { listRoles } from '../roles/api.js'
 import { getChannelStats, getServerDetail, listMembers, markChannelRead } from '../servers/api.js'
-import { ServerSearchOverlay } from '../search/ServerSearchOverlay.js'
+import { ChannelHeaderActions } from './ChannelHeaderActions.js'
 import { Composer } from './Composer.js'
 import { MessageList } from './MessageList.js'
 import { useNsfwGate } from './nsfwGate.js'
-import { PinnedPanel } from './PinnedPanel.js'
 import { addReaction, deleteMessage, editMessage, removeReaction, sendMessage } from './api.js'
 import type { PendingMessage } from './types.js'
 
 interface ChatScreenProps {
   serverId: string
   channelId: string
+  /** Видна ли колонка участников (Shell знает про тред-панель/ширину). */
+  memberListVisible: boolean
 }
 
 // Шапка канала по designs/final-chrome.jsx (KD_ChannelHeader): panelAlt,
-// иконка + имя + вертикальный разделитель + topic, справа mono-stats и иконки.
-function Header({ channel, channelId, serverId, serverName, memberCount, canPin, memberMap, emojiMap }: {
+// иконка + имя + вертикальный разделитель + topic, справа mono-stats. Действия
+// канала (📌/входящие/поиск) вынесены в ChannelHeaderActions: на широком экране
+// их показывает шапка участников (там просторнее), а здесь они остаются
+// фолбэком, когда колонка участников скрыта (узкое окно / открытый тред).
+function Header({ channel, channelId, serverId, serverName: _serverName, memberCount, memberListVisible }: {
   channel: Channel | undefined
   channelId: string
   serverId: string
   serverName: string
   memberCount: number
-  canPin: boolean
-  memberMap: ReadonlyMap<string, MemberPublic>
-  emojiMap?: ReadonlyMap<string, CustomEmoji>
+  /** Видна ли колонка участников — она перехватывает действия на lg-экранах. */
+  memberListVisible: boolean
 }) {
-  const [, navigate] = useLocation()
-  const setScope = useViewScope((s) => s.setScope)
-  const [showPins, setShowPins] = useState(false)
-  const [showSearch, setShowSearch] = useState(false)
   const { data: stats } = useQuery({
     queryKey: ['channel-stats', channelId],
     queryFn: () => getChannelStats(channelId),
     staleTime: 30_000,
   })
-
-  // Входящие шапки = серверная версия глобальных, ограниченная этим сервером
-  // (scope подхватит InboxScreen). Поиск же открываем оверлеем-палитрой прямо
-  // здесь — без ухода на полноэкранный /search.
-  function openServerInbox() {
-    setScope(serverId, serverName)
-    navigate('/inbox')
-  }
   return (
     <div className="px-4 h-12 border-b border-kd-border bg-kd-panel-alt flex items-center gap-2.5 shrink-0">
       <Icon.Hash size={14} className="text-kd-text-soft shrink-0" />
@@ -74,50 +63,12 @@ function Header({ channel, channelId, serverId, serverName, memberCount, canPin,
       <span className="text-[10px] text-kd-text-mute font-mono shrink-0">
         {stats ? `${stats.messageCount.toLocaleString('ru-RU')} сообщ. · ` : ''}{memberCount} подп.
       </span>
-      <div className="flex items-center gap-2.5 text-kd-text-mute shrink-0">
-        <div className="relative">
-          <button
-            type="button"
-            title="закреплённые"
-            onClick={() => setShowPins((v) => !v)}
-            className={`transition-colors ${showPins ? 'text-kd-warm' : 'hover:text-kd-text-soft'}`}
-          >
-            <Icon.Pin size={14} />
-          </button>
-          {showPins && (
-            <PinnedPanel
-              channelId={channelId}
-              canPin={canPin}
-              memberMap={memberMap}
-              emojiMap={emojiMap}
-              onClose={() => setShowPins(false)}
-            />
-          )}
-        </div>
-        <button
-          type="button"
-          title={`входящие · ${serverName}`}
-          onClick={openServerInbox}
-          className="hover:text-kd-text-soft transition-colors"
-        >
-          <Icon.Inbox size={14} />
-        </button>
-        <button
-          type="button"
-          title={`поиск в ${serverName}`}
-          onClick={() => setShowSearch(true)}
-          className={`transition-colors ${showSearch ? 'text-kd-warm' : 'hover:text-kd-text-soft'}`}
-        >
-          <Icon.Search size={14} />
-        </button>
-      </div>
-      {showSearch && (
-        <ServerSearchOverlay
-          serverId={serverId}
-          serverName={serverName}
-          onClose={() => setShowSearch(false)}
-        />
-      )}
+      {/* На lg действия переезжают в шапку участников — тут их прячем. */}
+      <ChannelHeaderActions
+        serverId={serverId}
+        channelId={channelId}
+        className={memberListVisible ? 'lg:hidden' : undefined}
+      />
     </div>
   )
 }
@@ -154,7 +105,7 @@ function NsfwGate({ channelName, onContinue }: { channelName: string; onContinue
   )
 }
 
-export function ChatScreen({ serverId, channelId }: ChatScreenProps) {
+export function ChatScreen({ serverId, channelId, memberListVisible }: ChatScreenProps) {
   const queryClient = useQueryClient()
   const user = useAuthStore((s) => s.user)
   const openProfile = useProfileUi((s) => s.open)
@@ -219,7 +170,7 @@ export function ChatScreen({ serverId, channelId }: ChatScreenProps) {
   })
   const roles = useMemo(() => allRoles.filter((r) => !r.isEveryone), [allRoles])
 
-  async function handleSend(content: string, attachments: Attachment[] = [], gif?: GifEmbed, sticker?: StickerRef) {
+  async function handleSend(content: string, attachments: Attachment[] = [], gif?: GifEmbed, sticker?: StickerRef, clip?: ClipEmbed) {
     if (!user) return
     const nonce = crypto.randomUUID()
     const replyId = replyTo?.id ?? null
@@ -234,6 +185,7 @@ export function ChatScreen({ serverId, channelId }: ChatScreenProps) {
       attachments,
       gif: gif ?? null,
       sticker: sticker ?? null,
+      clip: clip ?? null,
       _pending: 'sending',
       _nonce: nonce,
     }
@@ -250,6 +202,7 @@ export function ChatScreen({ serverId, channelId }: ChatScreenProps) {
         ...(spoilerIds.length > 0 ? { spoilerAttachments: spoilerIds } : {}),
         ...(gif ? { gif } : {}),
         ...(sticker ? { sticker } : {}),
+        ...(clip ? { clip } : {}),
       })
       queryClient.setQueryData<InfiniteData<MessagesPage, string | undefined>>(
         ['messages', channelId],
@@ -356,9 +309,7 @@ export function ChatScreen({ serverId, channelId }: ChatScreenProps) {
         serverId={serverId}
         serverName={serverDetail?.server.name ?? ''}
         memberCount={serverDetail?.memberCount ?? 0}
-        canPin={canPin}
-        memberMap={memberMap}
-        emojiMap={emojiMap}
+        memberListVisible={memberListVisible}
       />
       {(channel?.nsfw ?? false) && !nsfwAccepted ? (
         <NsfwGate channelName={channel?.name ?? ''} onContinue={() => acceptNsfw(channelId)} />

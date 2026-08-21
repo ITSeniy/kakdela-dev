@@ -151,15 +151,31 @@ export const GifEmbedSchema = z.object({
 })
 export type GifEmbed = z.infer<typeof GifEmbedSchema>
 
+// Клип-вложение (Klipy Clip): короткое видео СО звуком. В отличие от gif —
+// рендерится плеером с контролами/звуком (не muted-loop). previewUrl — постер,
+// gifUrl — беззвучный луп-фолбэк, mp4Url — основное видео со звуком.
+export const ClipEmbedSchema = z.object({
+  mp4Url:     z.string().url(),
+  gifUrl:     z.string().url().nullable(),
+  previewUrl: z.string().url(),
+  width:      z.number().int().positive(),
+  height:     z.number().int().positive(),
+  title:      z.string().default(''),
+})
+export type ClipEmbed = z.infer<typeof ClipEmbedSchema>
+
 // Стикер-вложение сообщения: денормализованный снимок стикера на момент
 // отправки (как ForwardedRef). Переживает удаление стикера из набора сервера —
-// уже отправленные сообщения продолжают рендериться.
+// уже отправленные сообщения продолжают рендериться. Источник — кастомный
+// стикер сервера (MinIO) или внешняя библиотека Klipy.
 export const StickerRefSchema = z.object({
-  stickerId: z.string().uuid(),
+  /** uuid стикера сервера, либо slug/id стикера Klipy (source='klipy'). */
+  stickerId: z.string(),
   name:      z.string(),
   imageUrl:  z.string().url(),
   width:     z.number().int().positive(),
   height:    z.number().int().positive(),
+  source:    z.enum(['server', 'klipy']).default('server'),
 })
 export type StickerRef = z.infer<typeof StickerRefSchema>
 
@@ -245,10 +261,12 @@ export const MessageSchema = z.object({
   forwarded: ForwardedRefSchema.nullable().optional(),
   /** OG-превью ссылок из текста. Подъезжают асинхронно (WS msg.embeds). */
   linkPreviews: z.array(LinkPreviewSchema).default([]),
-  /** GIF-вложение (GIPHY или загруженный .gif); null — обычное сообщение. */
+  /** GIF-вложение (Klipy или загруженный .gif); null — обычное сообщение. */
   gif: GifEmbedSchema.nullable().optional(),
-  /** Стикер сервера (снимок); null — обычное сообщение. */
+  /** Стикер сервера/Klipy (снимок); null — обычное сообщение. */
   sticker: StickerRefSchema.nullable().optional(),
+  /** Клип Klipy (видео со звуком); null — обычное сообщение. */
+  clip: ClipEmbedSchema.nullable().optional(),
   /** Опрос (определение + счётчики + мой голос); null — обычное сообщение. */
   poll: PollViewSchema.nullable().optional(),
   /** Встреча (определение + RSVP + мой ответ); null — обычное сообщение. */
@@ -400,13 +418,15 @@ export const SendMessageRequestSchema = z.object({
   gif: GifEmbedSchema.optional(),
   /** Стикер (отправка из пикера/избранного). */
   sticker: StickerRefSchema.optional(),
+  /** Клип Klipy (видео со звуком). */
+  clip: ClipEmbedSchema.optional(),
   /** Опрос: вопрос + варианты (сообщение-опрос может быть без текста). */
   poll: PollDefinitionSchema.optional(),
   /** Встреча: заголовок + время + место (сообщение может быть без текста). */
   event: EventDefinitionSchema.optional(),
 }).refine(
-  (v) => v.content.trim().length > 0 || (v.attachments && v.attachments.length > 0) || v.gif !== undefined || v.sticker !== undefined || v.poll !== undefined || v.event !== undefined,
-  { message: 'message must have content, attachments, a gif, a sticker, a poll or an event', path: ['content'] },
+  (v) => v.content.trim().length > 0 || (v.attachments && v.attachments.length > 0) || v.gif !== undefined || v.sticker !== undefined || v.clip !== undefined || v.poll !== undefined || v.event !== undefined,
+  { message: 'message must have content, attachments, a gif, a sticker, a clip, a poll or an event', path: ['content'] },
 )
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
@@ -433,31 +453,48 @@ export const PinnedMessagesResponseSchema = z.object({
 })
 export type PinnedMessagesResponse = z.infer<typeof PinnedMessagesResponseSchema>
 
-// ───── GIFs (GIPHY-прокси) ─────
+// ───── Медиа-библиотека Klipy (GIF / стикеры / клипы; мемы — позже) ─────
+//
+// Сервер проксирует Klipy (ключ и customer_id не уходят клиенту), выбирает
+// нужные тиры/форматы и отдаёт плоский нормализованный элемент — один и тот же
+// для грида пикера и сборки вложения на отправку. type различает поведение.
 
-export const GiphyGifSchema = z.object({
+export const KlipyMediaTypeSchema = z.enum(['gifs', 'stickers', 'clips'])
+export type KlipyMediaType = z.infer<typeof KlipyMediaTypeSchema>
+
+export const KlipyItemSchema = z.object({
   id: z.string(),
-  /** URL гифки для отправки/показа (downsized с CDN GIPHY — не рехостим). */
-  url: z.string().url(),
-  /** MP4-версия (GIPHY отдаёт её для каждой гифки) — рендерим как <video>. */
-  mp4Url: z.string().url(),
+  /** slug Klipy — нужен для share-триггера (attribution) и report. */
+  slug: z.string(),
+  title: z.string(),
   /** Маленькое превью для грида пикера. */
   previewUrl: z.string().url(),
+  /** Основной показ: gif/webp (или gif-луп клипа). */
+  url: z.string().url(),
+  /** mp4: у gif — muted-версия, у клипа — со звуком; null у стикеров. */
+  mp4Url: z.string().url().nullable(),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
-  title: z.string(),
 })
-export type GiphyGif = z.infer<typeof GiphyGifSchema>
+export type KlipyItem = z.infer<typeof KlipyItemSchema>
 
-export const GiphyResponseSchema = z.object({
-  gifs: z.array(GiphyGifSchema),
-  /** Offset следующей страницы или null, если результаты кончились. */
-  nextOffset: z.number().int().nonnegative().nullable(),
+export const KlipyResponseSchema = z.object({
+  items: z.array(KlipyItemSchema),
+  /** Номер следующей страницы или null, если результаты кончились. */
+  nextPage: z.number().int().positive().nullable(),
 })
-export type GiphyResponse = z.infer<typeof GiphyResponseSchema>
+export type KlipyResponse = z.infer<typeof KlipyResponseSchema>
 
-export const GiphyConfigSchema = z.object({ enabled: z.boolean() })
-export type GiphyConfig = z.infer<typeof GiphyConfigSchema>
+// Флаги возможностей: enabled — есть ли ключ; по типам — что реально доступно
+// на текущем тарифе ключа (memes на dev-ключе закрыт).
+export const KlipyConfigSchema = z.object({
+  enabled: z.boolean(),
+  gifs: z.boolean(),
+  stickers: z.boolean(),
+  clips: z.boolean(),
+  memes: z.boolean(),
+})
+export type KlipyConfig = z.infer<typeof KlipyConfigSchema>
 
 // ───── Избранное (единое: гифки / стикеры / эмодзи, per-user, на бэкенде) ─────
 //

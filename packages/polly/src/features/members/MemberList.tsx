@@ -17,6 +17,7 @@ import { useAuthStore } from '../auth/store.js'
 import { isBirthdayToday } from '../profile/format.js'
 import { useProfileUi } from '../profile/store.js'
 import { getServerDetail, kickMember, listMembers } from '../servers/api.js'
+import { ChannelHeaderActions } from '../chat/ChannelHeaderActions.js'
 import { ringUser } from '../voice/api.js'
 import { useVoiceStore } from '../voice/store.js'
 import { useVoiceChannelPresence } from '../voice/useVoiceChannelPresence.js'
@@ -34,6 +35,9 @@ export function memberTopPosition(m: MemberPublic): number {
 
 interface MemberListProps {
   serverId: string | null
+  /** Активный канал — чтобы показать действия канала (📌/входящие/поиск) в
+   *  просторной шапке участников на широком экране. */
+  channelId?: string | null
   className?: string
 }
 
@@ -182,7 +186,7 @@ function MemberRow({
   )
 }
 
-export function MemberList({ serverId, className }: MemberListProps) {
+export function MemberList({ serverId, channelId, className }: MemberListProps) {
   const queryClient = useQueryClient()
   const openProfile = useProfileUi((s) => s.open)
   const [, navigate] = useLocation()
@@ -312,10 +316,14 @@ export function MemberList({ serverId, className }: MemberListProps) {
 
   return (
     <aside className={`bg-kd-panel border-l border-kd-border flex-col min-h-0 ${className ?? ''}`}>
-      <div className="px-3 h-12 border-b border-kd-border bg-kd-panel-alt flex items-center shrink-0">
+      <div className="px-3 h-12 border-b border-kd-border bg-kd-panel-alt flex items-center gap-2 shrink-0">
         <div className="text-[11px] text-kd-text-mute font-mono">
           {onlineCount} / {members.length} онлайн
         </div>
+        {/* Действия канала переехали сюда из тесной шапки чата — тут просторно. */}
+        {serverId && channelId && (
+          <ChannelHeaderActions serverId={serverId} channelId={channelId} className="ml-auto" />
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto py-2.5 px-1.5">
