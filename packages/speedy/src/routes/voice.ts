@@ -4,6 +4,7 @@ import { z } from 'zod'
 
 import {
   ErrorBodySchema,
+  VoiceJoinRequestSchema,
   VoiceJoinResponseSchema,
   VoiceModerateRequestSchema,
   VoiceParticipantsResponseSchema,
@@ -261,6 +262,7 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
       preHandler: app.authenticate,
       schema: {
         params: z.object({ channelId: z.string().uuid() }),
+        body: VoiceJoinRequestSchema,
         response: {
           200: VoiceJoinResponseSchema,
           400: ErrorBodySchema,
@@ -307,6 +309,7 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
         userId,
         channelId,
         displayName: user.nickname ?? user.displayName,
+        deviceId: req.body.deviceId,
       })
 
       await redis.sadd(roomUsersKey(channelId), userId)
@@ -661,6 +664,7 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
       preHandler: app.authenticate,
       schema: {
         params: z.object({ channelId: z.string().uuid() }),
+        body: VoiceJoinRequestSchema,
         response: {
           200: VoiceJoinResponseSchema,
           401: ErrorBodySchema,
@@ -688,6 +692,7 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
         userId,
         channelId,
         displayName: me.displayName,
+        deviceId: req.body.deviceId,
         room: dmRoomName(channelId),
       })
 
@@ -701,6 +706,12 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
       if (othersPresent || (invite && invite.to === userId)) {
         // Принимаю звонок (или переподключаюсь) — гасим инвайт/таймаут.
         clearDmInvite(channelId)
+        // Ответил на одном устройстве — снимаем ринг на остальных устройствах
+        // этого же пользователя: dm.call-invite летел ВСЕМ его соединениям
+        // (аудит 2026-08, C-2). Клиентский IncomingCall чистит по channelId.
+        if (invite && invite.to === userId && !othersPresent) {
+          void broadcastToUser(userId, { t: 'dm.call-cancel', channelId, fromUserId: invite.from })
+        }
       } else if (invite && invite.from === userId) {
         // Я уже звоню (повторный/retry join) — продлеваем таймер, не дублируем
         // инвайт.

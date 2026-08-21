@@ -1,7 +1,7 @@
 import { ServerEventSchema, type ClientEvent, type ServerEvent } from '@kakdela/ginzu/ws-events'
 
-import { useAuthStore } from '../features/auth/store.js'
 import { useRealtimeStore } from '../features/realtime/store.js'
+import { ensureFreshAccessToken } from './api.js'
 import { SPEEDY_URL } from './serverUrl.js'
 
 const WS_URL = SPEEDY_URL.replace(/^http/, 'ws') + '/ws'
@@ -9,6 +9,11 @@ const WS_URL = SPEEDY_URL.replace(/^http/, 'ws') + '/ws'
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 30_000
 const CLIENT_PING_INTERVAL_MS = 25_000
+// Сколько раз подряд сервер может отвергнуть токен (4401), прежде чем мы
+// сдадимся. Каждый 4401 сопровождается принудительным refresh, так что
+// 2 подряд означают «сессия отозвана на сервере» — честный логаут через
+// clear() внутри refresh-пути.
+const MAX_UNAUTHORIZED_ATTEMPTS = 2
 
 type Handler = (e: ServerEvent) => void
 
@@ -20,11 +25,11 @@ export class WsClient {
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private lastPingSentAt: number | null = null
   private intentionallyClosed = false
-  private getToken: () => string | null
+  private unauthorizedAttempts = 0
 
-  constructor(getToken: () => string | null) {
-    this.getToken = getToken
-  }
+  // Токен больше не инжектится снаружи: openSocketAsync берёт его через
+  // ensureFreshAccessToken() (общий singleflight-refresh с REST).
+  constructor() {}
 
   connect(): void {
     this.intentionallyClosed = false
@@ -58,11 +63,23 @@ export class WsClient {
   }
 
   private openSocket(): void {
-    const token = this.getToken()
-    if (!token) {
+    void this.openSocketAsync()
+  }
+
+  /**
+   * Перед КАЖДЫМ подключением убеждаемся, что access-токен проживёт ещё
+   * хотя бы ~30 секунд (ensureFreshAccessToken обновит его через общий
+   * с REST singleflight). Без этого reconnect после обрыва длиннее TTL
+   * токена (15 мин) получал 4401 и умирал навсегда (аудит C-1).
+   */
+  private async openSocketAsync(): Promise<void> {
+    const token = await ensureFreshAccessToken()
+    if (!token || this.intentionallyClosed) {
       useRealtimeStore.getState().setStatus('disconnected')
       return
     }
+    // Пока ждали refresh, соединение могли закрыть/пересоздать.
+    if (this.ws !== null && this.ws.readyState !== WebSocket.CLOSED) return
 
     useRealtimeStore.getState().setStatus(this.reconnectAttempt === 0 ? 'connecting' : 'reconnecting')
 
@@ -102,9 +119,19 @@ export class WsClient {
         return
       }
       if (ev.code === 4401) {
-        // Token bad — don't loop forever. App-level re-auth will reconnect.
-        useRealtimeStore.getState().setStatus('disconnected')
-        console.warn('[ws] unauthorized — token rejected')
+        // Токен отвергнут. openSocketAsync уже пытался обновить его перед
+        // подключением — значит refresh либо не успел, либо сессия отозвана.
+        // Форсируем ещё один refresh и пробуем снова; после N неудач сдаёмся
+        // (сессия очистится внутри refresh-пути → App закроет сокет).
+        this.unauthorizedAttempts += 1
+        if (this.unauthorizedAttempts > MAX_UNAUTHORIZED_ATTEMPTS) {
+          useRealtimeStore.getState().setStatus('disconnected')
+          console.warn('[ws] unauthorized — giving up after repeated token rejection')
+          return
+        }
+        console.warn('[ws] unauthorized — refreshing session and retrying')
+        void ensureFreshAccessToken().catch(() => {})
+        this.scheduleReconnect()
         return
       }
       this.scheduleReconnect()
@@ -118,6 +145,7 @@ export class WsClient {
   private handleEvent(event: ServerEvent): void {
     if (event.t === 'ready') {
       this.reconnectAttempt = 0
+      this.unauthorizedAttempts = 0
       useRealtimeStore.getState().setStatus('connected')
     }
     if (event.t === 'ping') {
@@ -160,4 +188,4 @@ export class WsClient {
   }
 }
 
-export const wsClient = new WsClient(() => useAuthStore.getState().accessToken)
+export const wsClient = new WsClient()

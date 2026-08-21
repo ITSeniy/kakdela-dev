@@ -24,7 +24,8 @@ vi.mock('livekit-server-sdk', async () => {
   }
 })
 
-const { issueToken, listParticipants, voiceRoomName } = await import('./guido.js')
+const { issueToken, listParticipants, voiceRoomName, livekitIdentity, userIdFromIdentity } =
+  await import('./guido.js')
 
 const secret = () => new TextEncoder().encode(process.env.LIVEKIT_API_SECRET!)
 
@@ -88,6 +89,49 @@ describe('issueToken', () => {
     expect(video.canPublish).toBe(false)
     expect(video.canPublishData).toBe(false)
     expect(video.canSubscribe).toBe(true)
+  })
+
+  it('suffixed identity with deviceId (multi-device, C-2)', async () => {
+    const result = await issueToken({
+      userId: 'user-123',
+      channelId: 'chan-abc',
+      displayName: 'Alice',
+      deviceId: 'abc123def456',
+    })
+    const { payload } = await jwtVerify(result.token, secret())
+    // identity = userId:deviceId — два устройства одного аккаунта не
+    // выбивают друг друга из комнаты.
+    expect(payload.sub).toBe('user-123:abc123def456')
+    // metadata по-прежнему несёт чистый userId.
+    expect(payload.metadata).toBe(JSON.stringify({ userId: 'user-123' }))
+  })
+})
+
+describe('identity mapping', () => {
+  it('livekitIdentity appends :deviceId only when given', () => {
+    expect(livekitIdentity('u1', 'dev')).toBe('u1:dev')
+    expect(livekitIdentity('u1')).toBe('u1')
+    expect(livekitIdentity('u1', undefined)).toBe('u1')
+  })
+
+  it('userIdFromIdentity strips the device suffix', () => {
+    expect(userIdFromIdentity('user-1')).toBe('user-1')
+    expect(userIdFromIdentity('user-1:abc123def456')).toBe('user-1')
+  })
+
+  it('listParticipants maps device-suffixed identities to pure userIds', async () => {
+    mocks.listParticipants.mockResolvedValueOnce([
+      {
+        identity: 'user-1:abc123def456',
+        name: 'Alice (phone)',
+        joinedAt: 0n,
+        joinedAtMs: 1_700_000_000_000n,
+        isPublisher: true,
+        tracks: [{ source: TrackSource.MICROPHONE }],
+      },
+    ])
+    const out = await listParticipants('chan-xyz')
+    expect(out[0]?.userId).toBe('user-1')
   })
 })
 

@@ -11,7 +11,7 @@ import { channels, messages } from '../db/schema.js'
 import { db } from '../lib/db.js'
 import { redis } from '../lib/redis.js'
 import { broadcastToChannel, broadcastToServer } from '../ws/broadcast.js'
-import { listDmParticipants, listParticipants } from './guido.js'
+import { listDmParticipants, listParticipants, userIdFromIdentity } from './guido.js'
 
 // Имена комнат в guido — `voice-${channelId}`. Если webhook прилетел с
 // другим префиксом — это либо чужая комната, либо мы что-то неправильно
@@ -122,14 +122,17 @@ async function handleDmRoomEvent(
     case 'participant_joined': {
       const identity = event.participant?.identity
       if (!identity) return
+      // identity может быть `userId:deviceId` — мета и сравнения живут
+      // в координатах пользователей (authorId в call-log — FK на users).
+      const userId = userIdFromIdentity(identity)
       const raw = await redis.get(key)
       if (!raw) {
-        const meta: DmCallLogMeta = { initiator: identity, startedAt: Date.now(), answered: false }
+        const meta: DmCallLogMeta = { initiator: userId, startedAt: Date.now(), answered: false }
         await redis.set(key, JSON.stringify(meta), 'EX', DM_CALL_LOG_TTL_SEC)
         return
       }
       const meta = parseDmCallLog(raw)
-      if (meta && !meta.answered && identity !== meta.initiator) {
+      if (meta && !meta.answered && userId !== meta.initiator) {
         meta.answered = true
         await redis.set(key, JSON.stringify(meta), 'EX', DM_CALL_LOG_TTL_SEC)
       }
@@ -276,7 +279,7 @@ export async function handleWebhookEvent(
       if (!channelId || !event.participant) return
       const serverId = await lookupServerIdForVoiceChannel(channelId)
       if (!serverId) return
-      const userId = event.participant.identity
+      const userId = userIdFromIdentity(event.participant.identity)
       // Вебхуки не упорядочены: при быстром реконнекте left старой сессии
       // может прийти ПОСЛЕ joined новой — слепой srem+voice.leave «выкинул»
       // бы из UI живого участника. Сверяемся с актуальным состоянием LiveKit
@@ -300,7 +303,7 @@ export async function handleWebhookEvent(
       if (!channelId || !event.participant) return
       const serverId = await lookupServerIdForVoiceChannel(channelId)
       if (!serverId) return
-      const userId = event.participant.identity
+      const userId = userIdFromIdentity(event.participant.identity)
       await invalidateParticipantsCache(channelId)
       // Как и в participant_joined — не доверяем снапшоту из события,
       // берём живое состояние. Участника уже нет — state вещать не о ком,

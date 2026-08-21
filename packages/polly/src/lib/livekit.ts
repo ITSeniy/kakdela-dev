@@ -33,6 +33,26 @@ let currentRoom: Room | null = null
 let audioContainer: HTMLDivElement | null = null
 const attachedAudioElements = new Map<string, HTMLMediaElement>()
 
+// ───── Identity ↔ userId (мульти-девайс, аудит 2026-08 C-2) ─────
+//
+// LiveKit identity = `userId` или `userId:deviceId`: два устройства одного
+// аккаунта — два участника комнаты, а не «второй выбил первого». Весь voice-
+// store при этом ключуется ЧИСТЫМ userId — устройства одного человека
+// склеиваются в один тайл, а профили/аватары/модерация матчатся как раньше.
+
+export function userIdFromIdentity(identity: string): string {
+  const i = identity.indexOf(':')
+  return i === -1 ? identity : identity.slice(0, i)
+}
+
+/** Remote-participant по чистому userId (identity может иметь суффикс :deviceId). */
+function findRemoteByUserId(room: Room, userId: string): RemoteParticipant | undefined {
+  for (const p of room.remoteParticipants.values()) {
+    if (userIdFromIdentity(p.identity) === userId) return p
+  }
+  return undefined
+}
+
 // ───── Буст громкости выше 100% ─────
 //
 // HTMLMediaElement.volume ограничен диапазоном [0,1] — присвоение вне него
@@ -245,7 +265,7 @@ function isScreenSource(source: Track.Source): boolean {
 }
 
 function applyScreenSubscription(p: RemoteParticipant): void {
-  const watched = useVoiceStore.getState().watchedScreens.has(p.identity)
+  const watched = useVoiceStore.getState().watchedScreens.has(userIdFromIdentity(p.identity))
   for (const pub of p.trackPublications.values()) {
     if (!isScreenSource(pub.source)) continue
     void (pub as RemoteTrackPublication).setSubscribed(watched)
@@ -262,7 +282,7 @@ function applyScreenSubscription(p: RemoteParticipant): void {
 export function setScreenPreview(userId: string, on: boolean): void {
   const room = currentRoom
   if (!room) return
-  const p = room.remoteParticipants.get(userId)
+  const p = findRemoteByUserId(room, userId)
   if (!p) return
   const watched = useVoiceStore.getState().watchedScreens.has(userId)
   for (const pub of p.trackPublications.values()) {
@@ -278,7 +298,7 @@ export function watchScreen(userId: string, watch: boolean): void {
   useVoiceStore.getState().setWatchedScreen(userId, watch)
   const room = currentRoom
   if (!room) return
-  const p = room.remoteParticipants.get(userId)
+  const p = findRemoteByUserId(room, userId)
   if (p) applyScreenSubscription(p)
   broadcastWatching(room)
 }
@@ -610,9 +630,10 @@ function setSourceVolume(p: RemoteParticipant, source: Track.Source, volume: num
  *  точечно, дальше — персональные регуляторы голоса и стрима (до 200%),
  *  умноженные на общую громкость динамика. */
 function applyVolumeFor(p: RemoteParticipant, deafened: boolean): void {
-  const silenced = deafened || useLocalMute.getState().isMuted(p.identity)
+  const uid = userIdFromIdentity(p.identity)
+  const silenced = deafened || useLocalMute.getState().isMuted(uid)
   const master = useAudioDevices.getState().speakerVolume
-  const vols = volumesFor(useVoiceVolumes.getState().volumes, p.identity)
+  const vols = volumesFor(useVoiceVolumes.getState().volumes, uid)
   setSourceVolume(p, Track.Source.Microphone, silenced ? 0 : Math.min(2, vols.user * master))
   setSourceVolume(p, Track.Source.ScreenShareAudio, silenced ? 0 : Math.min(2, vols.stream * master))
 }
@@ -622,7 +643,7 @@ function applyVolumeFor(p: RemoteParticipant, deafened: boolean): void {
 export function applyParticipantVolume(userId: string): void {
   const room = currentRoom
   if (!room) return
-  const p = room.remoteParticipants.get(userId)
+  const p = findRemoteByUserId(room, userId)
   if (p) applyVolumeFor(p, useVoiceStore.getState().deafened)
 }
 
@@ -647,7 +668,7 @@ export function toggleLocalParticipantMute(userId: string): boolean {
   useLocalMute.getState().setMuted(userId, next)
   const room = currentRoom
   if (room) {
-    const p = room.remoteParticipants.get(userId)
+    const p = findRemoteByUserId(room, userId)
     if (p) applyVolumeFor(p, useVoiceStore.getState().deafened)
   }
   return next
@@ -661,8 +682,8 @@ function rebuildParticipantsFromRoom(room: Room): void {
   store.applySnapshot([])
   for (const p of room.remoteParticipants.values()) {
     store.upsertParticipant({
-      userId: p.identity,
-      displayName: p.name ?? p.identity,
+      userId: userIdFromIdentity(p.identity),
+      displayName: p.name ?? userIdFromIdentity(p.identity),
       isSpeaking: false,
       isScreenSharing: hasScreenShare(p),
       isCameraOn: hasCamera(p),
@@ -710,8 +731,8 @@ function attachListeners(room: Room): void {
   room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => {
     if (currentRoom !== room) return
     store().upsertParticipant({
-      userId: p.identity,
-      displayName: p.name ?? p.identity,
+      userId: userIdFromIdentity(p.identity),
+      displayName: p.name ?? userIdFromIdentity(p.identity),
       isSpeaking: false,
       isScreenSharing: hasScreenShare(p),
       isCameraOn: hasCamera(p),
@@ -725,13 +746,13 @@ function attachListeners(room: Room): void {
 
   room.on(RoomEvent.ParticipantDisconnected, (p: RemoteParticipant) => {
     if (currentRoom !== room) return
-    store().removeParticipant(p.identity)
+    store().removeParticipant(userIdFromIdentity(p.identity))
     playSound('user-leave')
   })
 
   room.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
     if (currentRoom !== room) return
-    store().setActiveSpeakers(speakers.map((s) => s.identity))
+    store().setActiveSpeakers(speakers.map((s) => userIdFromIdentity(s.identity)))
   })
 
   room.on(RoomEvent.ConnectionQualityChanged, (quality: ConnectionQuality, p: Participant) => {
@@ -745,18 +766,19 @@ function attachListeners(room: Room): void {
   // уже говорит. Симметрично TrackUnpublished — на случай unpublish при муте.
   room.on(RoomEvent.TrackPublished, (pub: RemoteTrackPublication, p: RemoteParticipant) => {
     if (currentRoom !== room) return
+    const uid = userIdFromIdentity(p.identity)
     if (pub.source === Track.Source.Microphone) {
-      store().patchParticipant(p.identity, { isMuted: !hasUnmutedMic(p) })
+      store().patchParticipant(uid, { isMuted: !hasUnmutedMic(p) })
       return
     }
     if (pub.source === Track.Source.Camera) {
-      store().patchParticipant(p.identity, { isCameraOn: true })
+      store().patchParticipant(uid, { isCameraOn: true })
       return
     }
     if (isScreenSource(pub.source)) {
       // Карточка демки появляется сразу, но подписка — только по клику.
-      const wasSharing = useVoiceStore.getState().participants.get(p.identity)?.isScreenSharing
-      store().patchParticipant(p.identity, { isScreenSharing: true })
+      const wasSharing = useVoiceStore.getState().participants.get(uid)?.isScreenSharing
+      store().patchParticipant(uid, { isScreenSharing: true })
       applyScreenSubscription(p)
       if (!wasSharing && pub.source === Track.Source.ScreenShare) playSound('stream-start')
     }
@@ -764,18 +786,19 @@ function attachListeners(room: Room): void {
 
   room.on(RoomEvent.TrackUnpublished, (pub: RemoteTrackPublication, p: RemoteParticipant) => {
     if (currentRoom !== room) return
+    const uid = userIdFromIdentity(p.identity)
     if (pub.source === Track.Source.Microphone) {
-      store().patchParticipant(p.identity, { isMuted: !hasUnmutedMic(p) })
+      store().patchParticipant(uid, { isMuted: !hasUnmutedMic(p) })
       return
     }
     if (pub.source === Track.Source.Camera) {
-      store().patchParticipant(p.identity, { isCameraOn: hasCamera(p) })
+      store().patchParticipant(uid, { isCameraOn: hasCamera(p) })
       return
     }
     if (isScreenSource(pub.source) && !hasScreenShare(p)) {
-      store().patchParticipant(p.identity, { isScreenSharing: false })
+      store().patchParticipant(uid, { isScreenSharing: false })
       // Следующий стрим этого участника снова начнётся как «не смотрю».
-      store().setWatchedScreen(p.identity, false)
+      store().setWatchedScreen(uid, false)
       playSound('stream-end')
     }
   })
@@ -789,15 +812,15 @@ function attachListeners(room: Room): void {
       if (msg.t === 'kd-watch' && Array.isArray(msg.watching)) {
         const watching = msg.watching.filter((x) => typeof x === 'string')
         // Звук «зритель зашёл/ушёл» — если меняется членство МОЕЙ демки.
-        const myId = room.localParticipant.identity
+        const myId = userIdFromIdentity(room.localParticipant.identity)
         if (useVoiceStore.getState().screenSharing) {
-          const before = useVoiceStore.getState().watchingByUser.get(participant.identity) ?? []
+          const before = useVoiceStore.getState().watchingByUser.get(userIdFromIdentity(participant.identity)) ?? []
           const was = before.includes(myId)
           const now = watching.includes(myId)
           if (!was && now) playSound('viewer-join')
           else if (was && !now) playSound('viewer-leave')
         }
-        store().setWatching(participant.identity, watching)
+        store().setWatching(userIdFromIdentity(participant.identity), watching)
       }
     } catch { /* чужой формат — игнорируем */ }
   })
@@ -812,14 +835,14 @@ function attachListeners(room: Room): void {
     if (currentRoom !== room) return
     if (pub.source !== Track.Source.Microphone) return
     if (p === room.localParticipant) return
-    store().patchParticipant(p.identity, { isMuted: true })
+    store().patchParticipant(userIdFromIdentity(p.identity), { isMuted: true })
   })
 
   room.on(RoomEvent.TrackUnmuted, (pub: TrackPublication, p: Participant) => {
     if (currentRoom !== room) return
     if (pub.source !== Track.Source.Microphone) return
     if (p === room.localParticipant) return
-    store().patchParticipant(p.identity, { isMuted: false })
+    store().patchParticipant(userIdFromIdentity(p.identity), { isMuted: false })
   })
 
   room.on(
@@ -831,11 +854,11 @@ function attachListeners(room: Room): void {
         pub.source === Track.Source.ScreenShare ||
         pub.source === Track.Source.ScreenShareAudio
       ) {
-        store().patchParticipant(p.identity, { isScreenSharing: true })
+        store().patchParticipant(userIdFromIdentity(p.identity), { isScreenSharing: true })
       }
       // Камера подписалась — трек доступен, перерисуем тайл с видео.
       if (pub.source === Track.Source.Camera) {
-        store().patchParticipant(p.identity, { isCameraOn: true })
+        store().patchParticipant(userIdFromIdentity(p.identity), { isCameraOn: true })
       }
       applyVolumeFor(p, useVoiceStore.getState().deafened)
     },
@@ -850,10 +873,10 @@ function attachListeners(room: Room): void {
         pub.source === Track.Source.ScreenShare ||
         pub.source === Track.Source.ScreenShareAudio
       ) {
-        store().patchParticipant(p.identity, { isScreenSharing: hasScreenShare(p) })
+        store().patchParticipant(userIdFromIdentity(p.identity), { isScreenSharing: hasScreenShare(p) })
       }
       if (pub.source === Track.Source.Camera) {
-        store().patchParticipant(p.identity, { isCameraOn: hasCamera(p) })
+        store().patchParticipant(userIdFromIdentity(p.identity), { isCameraOn: hasCamera(p) })
       }
     },
   )

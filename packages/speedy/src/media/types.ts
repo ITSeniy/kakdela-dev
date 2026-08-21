@@ -7,6 +7,13 @@ export interface VoiceTokenIssueArgs {
   channelId: string
   displayName: string
   /**
+   * Стабильный id устройства клиента. Задан → LiveKit identity будет
+   * `userId:deviceId`: два устройства одного аккаунта — два независимых
+   * участника комнаты, а не «второй выбил первого» (аудит 2026-08, C-2).
+   * Не задан (старый клиент) → identity = userId, как раньше.
+   */
+  deviceId?: string
+  /**
    * Явное имя LiveKit-комнаты. По умолчанию `voice-${channelId}`; DM-звонок
    * (T-087) передаёт `dm-${channelId}`, чтобы комната жила в отдельном
    * неймспейсе (webhook её намеренно игнорит, см. media/webhook.ts).

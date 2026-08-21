@@ -19,11 +19,16 @@ const mocks = vi.hoisted(() => ({
 
 // guido тащит livekit-server-sdk + env — мокаем только то, что использует
 // webhook (listDmParticipants / listParticipants как источник истины
-// «кто сейчас в комнате?»).
-vi.mock('./guido.js', () => ({
-  listDmParticipants: mocks.listDmParticipants,
-  listParticipants: mocks.listParticipants,
-}))
+// «кто сейчас в комнате?»). userIdFromIdentity — чистая функция, берём
+// настоящую реализацию (identity в тестах без device-суффиксов).
+vi.mock('./guido.js', async () => {
+  const actual = await vi.importActual<typeof import('./guido.js')>('./guido.js')
+  return {
+    listDmParticipants: mocks.listDmParticipants,
+    listParticipants: mocks.listParticipants,
+    userIdFromIdentity: actual.userIdFromIdentity,
+  }
+})
 
 vi.mock('../lib/redis.js', () => ({
   redis: {

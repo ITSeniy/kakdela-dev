@@ -12,6 +12,20 @@ import type {
 // с новым токеном; нет смысла раздувать TTL.
 const TOKEN_TTL_SECONDS = 60 * 60 * 6
 
+/**
+ * LiveKit identity участника: чистый `userId` или `userId:deviceId`, когда
+ * клиент представился устройством (мульти-девайс, аудит 2026-08 C-2).
+ */
+export function livekitIdentity(userId: string, deviceId?: string): string {
+  return deviceId ? `${userId}:${deviceId}` : userId
+}
+
+/** Обратное преобразование: чистый userId из любой identity. */
+export function userIdFromIdentity(identity: string): string {
+  const i = identity.indexOf(':')
+  return i === -1 ? identity : identity.slice(0, i)
+}
+
 export function voiceRoomName(channelId: string): string {
   return `voice-${channelId}`
 }
@@ -48,6 +62,7 @@ export async function issueToken(args: VoiceTokenIssueArgs): Promise<VoiceToken>
     userId,
     channelId,
     displayName,
+    deviceId,
     canPublish = true,
     canSubscribe = true,
     canPublishData = true,
@@ -57,7 +72,7 @@ export async function issueToken(args: VoiceTokenIssueArgs): Promise<VoiceToken>
   const metadata: VoiceTokenMetadata = { userId }
 
   const at = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
-    identity: userId,
+    identity: livekitIdentity(userId, deviceId),
     name: displayName,
     metadata: JSON.stringify(metadata),
     ttl: TOKEN_TTL_SECONDS,
@@ -76,7 +91,14 @@ export async function issueToken(args: VoiceTokenIssueArgs): Promise<VoiceToken>
 
 export async function revokeUser(args: { userId: string; channelId: string }): Promise<void> {
   const room = voiceRoomName(args.channelId)
-  await getRoomService().removeParticipant(room, args.userId)
+  // Identity может быть `userId:deviceId` — кикаем ВСЕ устройства юзера.
+  const infos = await listRoomInfos(room)
+  for (const p of infos) {
+    if (userIdFromIdentity(p.identity) !== args.userId) continue
+    try {
+      await getRoomService().removeParticipant(room, p.identity)
+    } catch { /* уже вышел */ }
+  }
 }
 
 export async function listParticipants(channelId: string): Promise<VoiceParticipant[]> {
@@ -88,16 +110,19 @@ export async function listDmParticipants(channelId: string): Promise<VoicePartic
   return listParticipantsForRoom(dmRoomName(channelId))
 }
 
-async function listParticipantsForRoom(room: string): Promise<VoiceParticipant[]> {
-  let infos
+async function listRoomInfos(room: string) {
   try {
-    infos = await getRoomService().listParticipants(room)
+    return await getRoomService().listParticipants(room)
   } catch (err) {
     // Пустая/несуществующая комната — это нормальное состояние,
     // не ошибка вызова. LiveKit отдаёт twirp not_found.
     if (isRoomNotFound(err)) return []
     throw err
   }
+}
+
+async function listParticipantsForRoom(room: string): Promise<VoiceParticipant[]> {
+  const infos = await listRoomInfos(room)
 
   return infos.map((p) => {
     const isScreenSharing = p.tracks.some(
@@ -110,7 +135,9 @@ async function listParticipantsForRoom(room: string): Promise<VoiceParticipant[]
     const joinedMs =
       p.joinedAtMs > 0n ? Number(p.joinedAtMs) : Number(p.joinedAt) * 1000
     return {
-      userId: p.identity,
+      // identity может быть `userId:deviceId` — наружу отдаём чистый userId
+      // (клиентский стор и WS-события живут в координатах пользователей).
+      userId: userIdFromIdentity(p.identity),
       displayName: p.name,
       joinedAt: new Date(joinedMs).toISOString(),
       isPublishing: p.isPublisher,
@@ -132,17 +159,14 @@ export async function muteParticipantMic(args: {
 }): Promise<void> {
   const room = voiceRoomName(args.channelId)
   const svc = getRoomService()
-  let info
-  try {
-    info = await svc.getParticipant(room, args.userId)
-  } catch (err) {
-    if (isRoomNotFound(err)) return
-    throw err
-  }
-  for (const t of info.tracks) {
-    if (t.source === TrackSource.MICROPHONE) {
+  // Identity может быть `userId:deviceId` — глушим все устройства юзера.
+  const infos = await listRoomInfos(room)
+  const targets = infos.filter((p) => userIdFromIdentity(p.identity) === args.userId)
+  for (const info of targets) {
+    for (const t of info.tracks) {
+      if (t.source !== TrackSource.MICROPHONE) continue
       try {
-        await svc.mutePublishedTrack(room, args.userId, t.sid, args.muted)
+        await svc.mutePublishedTrack(room, info.identity, t.sid, args.muted)
       } catch (err) {
         // unmute серверной стороной LiveKit может запрещать — это ок,
         // клиент цели включит мик сам по voice.mod.

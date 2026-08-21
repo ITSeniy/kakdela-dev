@@ -93,6 +93,46 @@ export function refreshSession(): Promise<string | null> {
   return tryRefresh()
 }
 
+// ───── Свежесть access-токена (для WS-reconnect, аудит 2026-08 C-1) ─────
+
+/** TTL access-токена из его JWT-payload; null если распарсить не удалось. */
+function tokenExpiresAt(token: string): number | null {
+  try {
+    const part = token.split('.')[1]
+    if (!part) return null
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/')
+    const payload = JSON.parse(atob(b64)) as { exp?: unknown }
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : null
+  } catch {
+    return null
+  }
+}
+
+const TOKEN_FRESH_MARGIN_MS = 30_000
+
+/**
+ * Access-токен, гарантированно живой ещё ~30 секунд. Нужен перед
+ * переподключением WebSocket: после долгого обрыва сохранённый токен
+ * с высокой вероятностью истёк (TTL 15 мин), и сервер отвечал бы 4401.
+ * Токен свежий → возвращается сразу, без сети. Истёк → singleflight-refresh
+ * (общий с REST). Refresh отвергнут → чистим сессию и возвращаем null.
+ */
+export async function ensureFreshAccessToken(): Promise<string | null> {
+  const current = useAuthStore.getState().accessToken
+  if (!current) return null
+  const exp = tokenExpiresAt(current)
+  if (exp === null || exp - Date.now() > TOKEN_FRESH_MARGIN_MS) return current
+  try {
+    const fresh = await refreshSession()
+    if (!fresh) useAuthStore.getState().clear()
+    return fresh
+  } catch {
+    // Сеть лежит — возвращаем как есть: вдруг подключится, а нет так
+    // получим 4401 и попробуем снова.
+    return current
+  }
+}
+
 async function doRequest(path: string, token: string | null, init?: RequestInit): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)

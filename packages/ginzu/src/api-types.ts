@@ -932,6 +932,23 @@ export const VoicePreviewResponseSchema = z.object({
 })
 export type VoicePreviewResponse = z.infer<typeof VoicePreviewResponseSchema>
 
+/**
+ * Тело POST /voice/:channelId/join и /voice/dm/:channelId/join.
+ * deviceId — стабильный id устройства клиента: LiveKit identity станет
+ * `userId:deviceId`, чтобы два устройства одного аккаунта не выбивали друг
+ * друга из комнаты (аудит 2026-08, C-2). Не передан → identity = userId
+ * (совместимость со старыми клиентами).
+ */
+export const VoiceJoinRequestSchema = z.object({
+  deviceId: z
+    .string()
+    .min(8)
+    .max(64)
+    .regex(/^[A-Za-z0-9_-]+$/, 'deviceId must be [A-Za-z0-9_-]')
+    .optional(),
+})
+export type VoiceJoinRequest = z.infer<typeof VoiceJoinRequestSchema>
+
 export const VoiceJoinResponseSchema = z.object({
   token: z.string(),
   url: z.string(),
