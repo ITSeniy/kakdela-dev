@@ -185,8 +185,8 @@ Discord — гигантский продукт. Чтобы не утонуть,
 - React Router v7 для роутов.
 - LiveKit client SDK для голоса и экрана.
 - Все компоненты из `final-*.jsx` пересобираются в нормальный React с TypeScript + Tailwind (токены из дизайна выносим в CSS-переменные).
-- **JWT-токены** хранятся не в localStorage: desktop — IndexedDB, AES-256-GCM с non-extractable ключом (`lib/host/secrets.ts`); web-фолбэк — `sessionStorage`. OS-keychain (stronghold) — запланированное усиление, пока НЕ реализовано (аудит 2026-08).
-- **Auto-update**: Tauri Updater из §ниже пока НЕ подключён (аудит 2026-08, M-5) — обновления раздаются вручную.
+- **JWT-токены** хранятся не в localStorage: desktop — OS-keychain через крейт `keyring` (rust-команды `os_secret_*`, `src-tauri/src/os_secrets.rs`); фолбэк — IndexedDB с AES-256-GCM (`lib/host/secrets.ts`), web-dev — `sessionStorage`.
+- **Auto-update**: плагин tauri-plugin-updater вшит и активен (`lib.rs`); для работы нужен конфиг `plugins.updater { endpoints, pubkey }` и подписанные сборки — пошагово docs/DEPLOY.md §8a. До настройки `check()` честно возвращает «обновлений нет».
 
 См. §3.5 про специфику Tauri.
 

@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CmdError;
-use crate::sealed::{self, KeyProvider, SoftwareKeyProvider};
+use crate::sealed::{self, KeyProvider};
 
 const HISTORY_FILE: &str = "secret-history.bin";
 
@@ -75,7 +75,7 @@ pub struct HistoryStore {
 /// В отличие от крипто-ядра здесь нет «инициализации»: пустой снапшот валиден.
 pub fn open(app_data_dir: &Path) -> Result<HistoryStore, CmdError> {
     let dir = sealed::data_dir(app_data_dir)?;
-    let key_provider: Box<dyn KeyProvider> = Box::new(SoftwareKeyProvider::new(&dir));
+    let key_provider = sealed::default_key_provider(app_data_dir)?;
     let path = dir.join(HISTORY_FILE);
     let snap = match sealed::read_sealed(&path, key_provider.as_ref())? {
         Some(bytes) => serde_json::from_slice(&bytes)

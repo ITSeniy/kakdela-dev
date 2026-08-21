@@ -40,12 +40,20 @@ async-trait = "0.1"
 # резолвятся за один poll). Дешевле, чем тащить tokio в крипто-путь.
 pollster = "0.4"
 base64 = "0.22"
+# OS-keychain (M-3/M-4 аудита 2026-08): DEK секретных чатов и JWT-сессия —
+# в Windows Credential Manager / macOS Keychain / Linux secret-service.
+# На неподдерживаемых платформах Entry::new вернёт ошибку — вызыватель
+# обязан фолбэчиться на софтварный провайдер (sealed::default_key_provider).
+keyring = "3"
 
 # Десктоп-плагины: один экземпляр (повторный запуск фокусирует окно) и
 # автозапуск при входе в систему. Мобильным сборкам не нужны.
+# updater (M-5): активен, но не сконфигурирован — check() вернёт ошибку,
+# пока в tauri.conf.json не появятся endpoints+pubkey (docs/DEPLOY.md §9).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
 
 # Свой клик-обработчик нативных тостов на Windows: плагин на desktop активацию
 # в JS не пробрасывает (notify-rust `.show()` без on_activated). Версия совпадает

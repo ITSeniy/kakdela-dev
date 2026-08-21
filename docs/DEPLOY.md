@@ -203,6 +203,28 @@ pnpm --filter @kakdela/polly tauri:build
 
 Раздай установщик `.exe` друзьям вместе с инвайт-кодом. Пока десктоп не собран, все могут пользоваться web-версией на `https://<домен>`.
 
+### 8a. Автообновления десктопа (updater) — опционально
+
+Плагин updater уже вшит в приложение (`lib.rs`), но **не сконфигурирован**: пока шаги ниже не сделаны, проверка обновлений просто вернёт «нет». Чтобы включить:
+
+```powershell
+# 1. Однократно: пара ключей подписи. Приватный — в тайное место, НЕ в git!
+pnpm --filter @kakdela/polly tauri signer generate -w ~/.tauri/kakdela.key
+# 2. Публичный ключ из вывода → tauri.conf.json:
+#    "plugins": { "updater": {
+#      "pubkey": "<содержимое kakdela.key.pub>",
+#      "endpoints": ["https://<домен>/updates/{{target}}/{{arch}}/{{current_version}}"]
+#    } }
+#    и там же в "bundle": "createUpdaterArtifacts": true
+# 3. Сборка с приватным ключом:
+$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content ~/.tauri/kakdela.key -Raw)
+pnpm --filter @kakdela/polly tauri:build
+# → рядом с setup.exe появятся .sig — выложи setup.exe+sig на свой хостинг
+#   по пути из endpoints (можно через тот же MinIO: mc cp ... s3/<домен>-updates/)
+```
+
+Клиент при старте новой версии проверит подпись манифеста; без валидной подписи обновление будет отвергнуто. Проверка вызывается только из кода (`lib/host/updater.ts`) — добавь кнопку «проверить обновления» в настройки или дёргай `checkForUpdate()` при запуске.
+
 ## 9. Чек-лист после деплоя
 
 - [ ] `https://<домен>/healthz` → `status: ok`

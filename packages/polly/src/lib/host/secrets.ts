@@ -1,15 +1,15 @@
-// Persistent, encrypted-at-rest хранилище мелких секретов (access-токен; позже —
-// прикладные мелочи). Бэкенд по умолчанию: non-extractable AES-GCM ключ, лежащий
-// в IndexedDB — его сырые байты JS прочитать НЕ может (ими владеет crypto.subtle),
-// и им шифруется каждое значение. Переживает холодный старт; на диске — только
-// шифртекст.
+// Persistent хранилище мелких секретов (JWT-сессия; прикладные мелочи).
 //
-// Это СОФТВАРНОЕ шифрование. Аппаратное запечатывание ключа придёт отдельно:
-//   • desktop  — OS keychain через tauri-plugin-stronghold (T-068);
-//   • Android  — Android Keystore через крипто-стор libsignal (T-101). Когда тот
-//     нативный мост появится, это хранилище будет делегировать ему.
-// Если IndexedDB/WebCrypto недоступны (нестрогий контекст, web-dev) — fallback на
-// sessionStorage, чтобы код не падал. localStorage не используем (CONVENTIONS).
+// Приоритет бэкендов (аудит 2026-08, M-3):
+//   1. OS-keychain через rust-команды os_secret_* (Windows Credential Manager /
+//      macOS Keychain / Linux secret-service). Основной путь desktop-клиента.
+//   2. Non-extractable AES-GCM ключ + шифртекст в IndexedDB — софтверный
+//      фолбэк (keychain недоступен / ошибка IPC). Значения из п.1 при чтении
+//      лениво мигрируются сюда → в п.1 обратно не пишем (см. osSecrets.get).
+//   3. sessionStorage — только web-dev без WebCrypto/IndexedDB.
+//
+// localStorage не используем (CONVENTIONS). Access-токен в рантайме живёт
+// только в памяти Zustand-store (features/auth/store.ts).
 
 export interface Secrets {
   get(key: string): Promise<string | null>
@@ -22,6 +22,11 @@ const DB_VERSION = 1
 const STORE_KEYS = 'meta'   // держит CryptoKey под id 'aesKey'
 const STORE_VAULT = 'vault' // держит { iv, ct } под именем секрета
 const AES_KEY_ID = 'aesKey'
+
+function isTauri(): boolean {
+  if (typeof window === 'undefined') return false
+  return '__TAURI__' in window || '__TAURI_INTERNALS__' in window
+}
 
 function cryptoAvailable(): boolean {
   return (
@@ -70,6 +75,42 @@ function idbDelete(db: IDBDatabase, store: string, key: string): Promise<void> {
     tx.onerror = () => reject(tx.error)
   })
 }
+
+async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const mod = await import('@tauri-apps/api/core')
+  return mod.invoke<T>(cmd, args)
+}
+
+// ───── 1. OS-keychain (основной desktop-бэкенд) ─────
+
+const osSecrets: Secrets = {
+  async get(key) {
+    const value = await invoke<string | null>('os_secret_get', { key })
+    if (value != null) return value
+
+    // Ленивая миграция софтверного стора прошлых версий: значение нашлось
+    // в IndexedDB → переносим в keychain и стираем из IDB.
+    if (isTauri() && cryptoAvailable()) {
+      try {
+        const legacy = await cryptoSecrets.get(key)
+        if (legacy != null) {
+          await invoke('os_secret_set', { key, value: legacy })
+          await cryptoSecrets.delete(key)
+          return legacy
+        }
+      } catch { /* миграция best-effort */ }
+    }
+    return null
+  },
+  set(key, value) {
+    return invoke('os_secret_set', { key, value })
+  },
+  async delete(key) {
+    try { await invoke('os_secret_delete', { key }) } catch { /* уже нет записи */ }
+  },
+}
+
+// ───── 2. Софтверный фолбэк: AES-GCM в IndexedDB ─────
 
 // Достаём (или единожды создаём) non-extractable AES-GCM ключ. Хранится прямо в
 // IndexedDB как CryptoKey — structured clone это умеет, и ключ остаётся
@@ -125,29 +166,35 @@ const cryptoSecrets: Secrets = {
   },
 }
 
-// Fallback для окружений без WebCrypto/IndexedDB (web-dev в нестрогом контексте).
+// ───── 3. Последний фолбэк для web-dev ─────
+
 const sessionSecrets: Secrets = {
   async get(key) { return sessionStorage.getItem(key) },
   async set(key, value) { sessionStorage.setItem(key, value) },
   async delete(key) { sessionStorage.removeItem(key) },
 }
 
-// Обёртка: пробуем зашифрованный стор, при любой ошибке откатываемся на
-// sessionStorage — чтобы auth не падал из-за частных причуд WebView/приватного
-// режима. Решение «какой бэкенд» принимается лениво и кешируется.
+// Обёртка: первый доступный бэкенд основной, второй — фолбэк на случай ошибки
+// (keychain залочен, IPC упал). Решение кешируется на уровне модуля.
 function makeSecrets(): Secrets {
-  if (!cryptoAvailable()) return sessionSecrets
-  const primary = cryptoSecrets
+  const backends: Secrets[] = []
+  if (isTauri()) backends.push(osSecrets)
+  if (cryptoAvailable()) backends.push(cryptoSecrets)
+  if (backends.length === 0) return sessionSecrets
+
+  const primary = backends[0]!
+  const fallback = backends[1] ?? sessionSecrets
   return {
     async get(key) {
-      try { return await primary.get(key) } catch { return sessionSecrets.get(key) }
+      try { return await primary.get(key) } catch { return fallback.get(key) }
     },
     async set(key, value) {
-      try { await primary.set(key, value) } catch { await sessionSecrets.set(key, value) }
+      try { await primary.set(key, value) } catch { await fallback.set(key, value) }
     },
     async delete(key) {
-      try { await primary.delete(key) } catch { await sessionSecrets.delete(key) }
-      // Чистим и fallback на всякий случай — секрет не должен «протекать» мимо.
+      try { await primary.delete(key) } catch { /* ignore */ }
+      // Секрет не должен «протекать» мимо — чистим все прочие бэкенды.
+      try { await fallback.delete(key) } catch { /* ignore */ }
       try { await sessionSecrets.delete(key) } catch { /* ignore */ }
     },
   }

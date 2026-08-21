@@ -31,7 +31,7 @@ use libsignal_protocol::{
 use libsignal_protocol::{KyberPreKeyStore, PreKeyStore, SignedPreKeyStore};
 
 use crate::error::CmdError;
-use crate::sealed::{self, KeyProvider, SoftwareKeyProvider};
+use crate::sealed::{self, KeyProvider};
 use store::KdProtocolStore;
 
 // safety number: и итерации, и id, и ключи должны совпадать у обеих сторон —
@@ -161,7 +161,7 @@ pub struct CryptoCore {
 /// Открыть существующий стор. None — если устройство ещё не инициализировано.
 pub fn open(app_data_dir: &Path) -> Result<Option<CryptoCore>, CmdError> {
     let dir = sealed::data_dir(app_data_dir)?;
-    let key_provider: Box<dyn KeyProvider> = Box::new(SoftwareKeyProvider::new(&dir));
+    let key_provider = sealed::default_key_provider(app_data_dir)?;
     match store::load(&dir, key_provider.as_ref())? {
         Some(store) => Ok(Some(CryptoCore {
             dir,
@@ -176,7 +176,7 @@ pub fn open(app_data_dir: &Path) -> Result<Option<CryptoCore>, CmdError> {
 /// на стороне команды crypto_init: создаём только если open() вернул None).
 pub fn create(app_data_dir: &Path, self_user_id: &str) -> Result<CryptoCore, CmdError> {
     let dir = sealed::data_dir(app_data_dir)?;
-    let key_provider: Box<dyn KeyProvider> = Box::new(SoftwareKeyProvider::new(&dir));
+    let key_provider = sealed::default_key_provider(app_data_dir)?;
     let mut rng = sealed::os_rng();
     let identity = IdentityKeyPair::generate(&mut rng);
     // 14-битный ненулевой registrationId — как у Signal.

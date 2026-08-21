@@ -103,7 +103,7 @@ PostgreSQL with drizzle-orm. Migrations live in `packages/speedy/drizzle/`. Snak
 - **Speedy routes**: one file per domain (`auth.ts`, `messages.ts`, `voice.ts`), each exports a `FastifyPluginAsyncZod`.
 - **Errors**: always return `{ error: { code, message } }`. Codes are `kebab-case`.
 - **Design tokens**: never hardcode colors. Use `bg-kd-panel`, `text-kd-textSoft`, etc. (Tailwind extensions backed by `tokens.css` variables).
-- **Auth tokens**: never `localStorage`. Desktop: IndexedDB, AES-256-GCM with a non-extractable CryptoKey (`packages/polly/src/lib/host/secrets.ts`) — NOT stronghold/keychain (doc drift fixed after 2026-08 audit; OS-keychain storage is planned hardening). Access token in memory only. In web-only mode: `sessionStorage`.
+- **Auth tokens**: never `localStorage`. Desktop: OS-keychain via `keyring` crate (`os_secret_*` commands in `src-tauri/src/os_secrets.rs`; Windows Credential Manager / macOS Keychain / Linux secret-service) with lazy migration from the legacy IndexedDB AES-GCM vault (`packages/polly/src/lib/host/secrets.ts`). Access token in memory only. In web-only mode: `sessionStorage`.
 - **Security**: argon2id (not bcrypt), Zod on every endpoint, magic-byte file validation, DOMPurify before any `dangerouslySetInnerHTML`.
 
 ### Prohibited

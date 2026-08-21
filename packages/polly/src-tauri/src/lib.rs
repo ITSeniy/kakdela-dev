@@ -8,6 +8,7 @@
 mod commands;
 mod crypto;
 mod error;
+mod os_secrets;
 mod sealed;
 mod store;
 
@@ -55,6 +56,10 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
         ));
+        // Updater (M-5): плагин активен, но check() вернёт ошибку, пока в
+        // tauri.conf.json не появятся plugins.updater { endpoints, pubkey } —
+        // см. docs/DEPLOY.md §9. Фронт дёргает его только из host/updater.ts.
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
 
     builder
@@ -93,6 +98,10 @@ pub fn run() {
             commands::secret_history_mark_read,
             commands::secret_history_list,
             commands::secret_history_peers,
+            os_secrets::os_secret_get,
+            os_secrets::os_secret_set,
+            os_secrets::os_secret_delete,
+            relaunch_app,
             audio::audio_capture_capability,
             audio::audio_list_sessions,
             audio::audio_list_windows,
@@ -292,23 +301,41 @@ fn keep_awake(app: tauri::AppHandle, on: bool) {
     let _ = (app, on);
 }
 
+/// Перезапуск приложения (после установки обновления). Никогда не возвращается.
+#[tauri::command]
+fn relaunch_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
 /// Готовит круглую иконку тоста (appLogoOverride): аватар автора, отрисованный
 /// фронтом в canvas (base64 PNG), а при его отсутствии/ошибке — встроенное лого
 /// приложения. Пишем во временный файл (WinRT грузит картинку по file:// в
-/// момент показа). Слотов 16 по кругу — старый тост к моменту переиспользования
-/// слота уже скрыт, гонки нет.
+/// момент показа).
+///
+/// Аудит 2026-08 (L): имя файла НЕ предсказуемо — случайный hex в выделенном
+/// подкаталоге %TEMP%\kakdela-toast\ (никаких общих слотов, которые другой
+/// процесс мог бы подменить между записью и показом тоста). Протухшие файлы
+/// (>1 ч) подчищаем на каждой записи — WinRT успевает прочитать иконку при
+/// показе, а тосты не живут часами.
 #[cfg(windows)]
 fn write_toast_icon(icon_base64: Option<String>) -> Option<std::path::PathBuf> {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static SLOT: AtomicU32 = AtomicU32::new(0);
+    use rand::RngCore;
 
-    let dir = std::env::temp_dir();
+    let dir = std::env::temp_dir().join("kakdela-toast");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    cleanup_stale_icons(&dir);
+
+    let mut name = [0u8; 8];
+    crate::sealed::os_rng().fill_bytes(&mut name);
+    let hex: String = name.iter().map(|b| format!("{b:02x}")).collect();
+
     if let Some(b64) = icon_base64 {
         use base64::engine::general_purpose::STANDARD;
         use base64::Engine;
         if let Ok(bytes) = STANDARD.decode(b64.as_bytes()) {
-            let slot = SLOT.fetch_add(1, Ordering::Relaxed) % 16;
-            let path = dir.join(format!("kakdela-toast-{slot}.png"));
+            let path = dir.join(format!("kakdela-toast-{hex}.png"));
             if std::fs::write(&path, &bytes).is_ok() {
                 return Some(path);
             }
@@ -316,11 +343,32 @@ fn write_toast_icon(icon_base64: Option<String>) -> Option<std::path::PathBuf> {
     }
     // Фолбэк — встроенное лого приложения (всегда доступно, без сети).
     const LOGO: &[u8] = include_bytes!("../icons/128x128.png");
-    let path = dir.join("kakdela-toast-logo.png");
+    let path = dir.join(format!("kakdela-logo-{hex}.png"));
     if std::fs::write(&path, LOGO).is_ok() {
         return Some(path);
     }
     None
+}
+
+/// Чистит иконки тостов старше часа (тосты к тому моменту давно скрыты).
+#[cfg(windows)]
+fn cleanup_stale_icons(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let max_age = std::time::Duration::from_secs(3600);
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age > max_age);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Нативный тост с переходом по клику. Десктоп-плагин активацию в JS не
