@@ -5,8 +5,6 @@ import {
   type WebhookEvent,
 } from 'livekit-server-sdk'
 
-import type { ServerEvent } from '@kakdela/ginzu/ws-events'
-
 import type { Message, SystemEvent } from '@kakdela/ginzu/api-types'
 
 import { channels, messages } from '../db/schema.js'

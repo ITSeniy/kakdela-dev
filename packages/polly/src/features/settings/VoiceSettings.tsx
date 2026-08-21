@@ -180,7 +180,7 @@ function DeviceSettings() {
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={() => { testing ? stopTest() : void startTest() }}
+              onClick={() => { if (testing) { stopTest() } else { void startTest() } }}
               className={[
                 'px-3 py-1.5 rounded-kd text-[12px] font-semibold transition-colors shrink-0',
                 testing ? 'bg-kd-danger text-white hover:opacity-90' : 'bg-kd-accent text-white hover:bg-kd-accent-deep',
