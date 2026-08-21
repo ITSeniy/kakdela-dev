@@ -5,9 +5,17 @@
 // по горизонтали прижимаем к краю якоря и клампим во вьюпорт. ResizeObserver
 // перемеряет после ленивой загрузки контента (Suspense-fallback меньше),
 // scroll в capture-фазе держит всплывашку у якоря при прокрутке ленты.
+//
+// Масштаб интерфейса — CSS `zoom` на <html> (дефолт 125%). getBoundingClientRect
+// и innerWidth остаются «визуальными» CSS-px, а left/top у fixed-элемента внутри
+// зумнутого <html> — ЛОКАЛЬНЫЕ. Считаем всё в локальных px (визуальные делим на
+// zoom, offsetWidth уже локальный), иначе на 125/150% всплывашка уезжает от
+// якоря (та же поправка, что в clampFixed для ContextMenu).
 
 import { type ReactNode, useLayoutEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+
+import { getUiZoom } from '../features/settings/appearance.js'
 
 const MARGIN = 8
 const GAP = 4
@@ -29,17 +37,26 @@ export function Popover({ anchor, align = 'end', onClose, children }: PopoverPro
     if (!el) return undefined
 
     const place = () => {
+      const z = getUiZoom()
       const a = anchor.getBoundingClientRect()
+      // rect / innerWidth — «визуальные» px; приводим к локальным (÷z). offsetWidth
+      // уже локальный, left/top тоже задаём в локальных.
+      const aLeft = a.left / z
+      const aRight = a.right / z
+      const aTop = a.top / z
+      const aBottom = a.bottom / z
+      const vw = window.innerWidth / z
+      const vh = window.innerHeight / z
       const w = el.offsetWidth
       const h = el.offsetHeight
-      let x = align === 'start' ? a.left : a.right - w
-      x = Math.min(x, window.innerWidth - MARGIN - w)
+      let x = align === 'start' ? aLeft : aRight - w
+      x = Math.min(x, vw - MARGIN - w)
       x = Math.max(x, MARGIN)
-      const fitsAbove = a.top - GAP - h >= MARGIN
-      const fitsBelow = a.bottom + GAP + h <= window.innerHeight - MARGIN
-      let y = fitsAbove || !fitsBelow ? a.top - GAP - h : a.bottom + GAP
+      const fitsAbove = aTop - GAP - h >= MARGIN
+      const fitsBelow = aBottom + GAP + h <= vh - MARGIN
+      let y = fitsAbove || !fitsBelow ? aTop - GAP - h : aBottom + GAP
       y = Math.max(y, MARGIN)
-      y = Math.min(y, window.innerHeight - MARGIN - h)
+      y = Math.min(y, vh - MARGIN - h)
       el.style.left = `${x}px`
       el.style.top = `${y}px`
     }

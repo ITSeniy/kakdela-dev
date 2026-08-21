@@ -802,7 +802,15 @@ export function ChannelList({ serverId, activeChannelId }: ChannelListProps) {
         </button>
 
         {menuOpen && serverId && (
-          <div className="absolute left-2 right-2 top-full mt-1.5 z-50 bg-kd-panel border border-kd-border rounded-kd shadow-kd-modal py-1 overflow-hidden">
+          <div
+            className={[
+              'absolute left-2 right-2 z-50 bg-kd-panel border border-kd-border rounded-kd shadow-kd-modal py-1 overflow-hidden',
+              // С баннером шапка — 108px, но меню должно выпадать из-под имени
+              // (как в Discord), а не из-под всей картинки. Без баннера — из-под
+              // компактной шапки h-12.
+              detail?.server.bannerUrl ? 'top-[46px]' : 'top-full mt-1.5',
+            ].join(' ')}
+          >
             {canManage && (
               <ServerMenuItem
                 glyph={<span className="text-kd-warm">↪</span>}
