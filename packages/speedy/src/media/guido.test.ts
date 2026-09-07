@@ -24,7 +24,7 @@ vi.mock('livekit-server-sdk', async () => {
   }
 })
 
-const { issueToken, listParticipants, voiceRoomName, livekitIdentity, userIdFromIdentity } =
+const { issueToken, listParticipants, revokeUser, voiceRoomName, livekitIdentity, userIdFromIdentity } =
   await import('./guido.js')
 
 const secret = () => new TextEncoder().encode(process.env.LIVEKIT_API_SECRET!)
@@ -68,12 +68,11 @@ describe('issueToken', () => {
       canPublishData: true,
     })
 
-    // TTL = 6h. Проверяем относительно текущего времени, потому что
-    // livekit-server-sdk не обязан выставлять iat.
+    // Short initial admission token, not a revocation guarantee on self-hosted LiveKit.
     expect(payload.exp).toBeDefined()
     const remaining = (payload.exp ?? 0) - before
-    expect(remaining).toBeGreaterThanOrEqual(60 * 60 * 5)
-    expect(remaining).toBeLessThanOrEqual(60 * 60 * 7)
+    expect(remaining).toBeGreaterThanOrEqual(59)
+    expect(remaining).toBeLessThanOrEqual(61)
   })
 
   it('honours permission overrides', async () => {
@@ -132,6 +131,30 @@ describe('identity mapping', () => {
     ])
     const out = await listParticipants('chan-xyz')
     expect(out[0]?.userId).toBe('user-1')
+  })
+})
+
+describe('revokeUser', () => {
+  it('removes every device but not other users', async () => {
+    mocks.listParticipants.mockResolvedValue([{ identity: 'u1:desktop' }, { identity: 'u1:phone' }, { identity: 'u2:phone' }])
+    mocks.removeParticipant.mockResolvedValue(undefined)
+    await revokeUser({ userId: 'u1', channelId: 'channel' })
+    expect(mocks.removeParticipant.mock.calls).toEqual([['voice-channel', 'u1:desktop'], ['voice-channel', 'u1:phone']])
+  })
+  it('reports real removal failures and still tries the other devices', async () => {
+    mocks.listParticipants.mockResolvedValue([{ identity: 'u1:desktop' }, { identity: 'u1:phone' }])
+    mocks.removeParticipant.mockRejectedValueOnce(new Error('synthetic admin API failure')).mockResolvedValueOnce(undefined)
+    await expect(revokeUser({ userId: 'u1', channelId: 'channel' })).rejects.toThrow()
+    expect(mocks.removeParticipant).toHaveBeenCalledTimes(2)
+  })
+  it('does not mistake an admin proxy HTTP 404 for successful removal', async () => {
+    mocks.listParticipants.mockRejectedValue(Object.assign(new Error('upstream route missing'), { status: 404 }))
+    await expect(revokeUser({ userId: 'u1', channelId: 'channel' })).rejects.toThrow('upstream route missing')
+  })
+  it('treats an already absent participant as successful removal', async () => {
+    mocks.listParticipants.mockResolvedValue([{ identity: 'u1:desktop' }])
+    mocks.removeParticipant.mockRejectedValue(Object.assign(new Error('absent'), { code: 'not_found' }))
+    await expect(revokeUser({ userId: 'u1', channelId: 'channel' })).resolves.toBeUndefined()
   })
 })
 

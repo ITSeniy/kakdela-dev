@@ -255,7 +255,7 @@ export async function handleWebhookEvent(
       }
       const serverId = await lookupServerIdForVoiceChannel(channelId)
       if (!serverId) return
-      const userId = event.participant.identity
+      const userId = userIdFromIdentity(event.participant.identity)
       await redis.sadd(roomUsersKey(channelId), userId)
       await invalidateParticipantsCache(channelId)
       await broadcastToServer(serverId, { t: 'voice.join', channelId, userId })

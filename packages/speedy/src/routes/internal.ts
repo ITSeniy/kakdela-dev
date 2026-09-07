@@ -6,6 +6,7 @@ import type { FastifyPluginAsync } from 'fastify'
 
 import { env } from '../env.js'
 import { alreadyProcessed, handleWebhookEvent } from '../media/webhook.js'
+import { enforceVoiceEventAccess } from '../media/revocation.js'
 
 // Проверяем подпись вебхука сами, а не через WebhookReceiver.receive: тот
 // зовёт jwtVerify без clockTolerance, а часы docker-VM (WSL2) после сна
@@ -73,6 +74,16 @@ export const internalRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(401).send({
         error: { code: 'invalid-signature', message: 'webhook signature invalid' },
       })
+    }
+
+    // Security checks precede dedup: a failed removal must remain retryable.
+    try {
+      if (!await enforceVoiceEventAccess(event, app.log)) {
+        return reply.code(200).send({ ok: true, revoked: true })
+      }
+    } catch (err) {
+      app.log.error({ err, eventId: event.id }, 'livekit-webhook: access enforcement failed')
+      return reply.code(503).send({ error: { code: 'voice-revocation-pending', message: 'voice access enforcement temporarily unavailable' } })
     }
 
     if (await alreadyProcessed(event.id)) {

@@ -20,6 +20,7 @@ import { assertMember, assertPermission, forbidden, notFound } from '../lib/perm
 import { redis } from '../lib/redis.js'
 import { dmRoomName, issueToken, listDmParticipants, listParticipants, muteParticipantMic, revokeUser } from '../media/guido.js'
 import { broadcastToServer, broadcastToUser } from '../ws/broadcast.js'
+import { withUserAccess } from '../ws/access.js'
 
 // Резервный набор «кто сейчас в комнате» — основной источник истины это
 // LiveKit (см. T-032 webhook), но мы пишем сюда на join/leave для подстраховки
@@ -318,12 +319,19 @@ export const voiceRoutes: FastifyPluginAsyncZod = async (app) => {
       // кэш, чтобы следующий GET /participants увидел тот же список.
       const participants = await fetchAndCacheParticipants(channelId)
 
-      return reply.code(200).send({
-        token: token.token,
-        url: token.url,
-        room: token.room,
-        participants,
+      // Recheck after asynchronous token/cache work; hold membership locks
+      // until the response is enqueued, just like WS delivery.
+      await withUserAccess([userId], (snapshots) => {
+        const access = snapshots.get(userId)
+        if (!access?.exists || !access.channels.has(channelId)) throw forbidden()
+        void reply.code(200).send({
+          token: token.token,
+          url: token.url,
+          room: token.room,
+          participants,
+        })
       })
+      return reply
     },
   )
 

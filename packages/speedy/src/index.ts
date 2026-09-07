@@ -14,6 +14,7 @@ import { makeLoggerOptions } from './lib/logger.js'
 import { startMediaGcSweeper } from './lib/media-gc.js'
 import { redis } from './lib/redis.js'
 import { presence } from './presence/store.js'
+import { startVoiceAccessReconciler } from './media/revocation.js'
 import { healthRoutes } from './routes/health.js'
 import { auditRoutes } from './routes/audit.js'
 import { authRoutes } from './routes/auth.js'
@@ -128,7 +129,10 @@ async function main() {
   // первый же addConnection не потёрся сбросом.
   await presence.resetAll()
 
+  let stopVoiceAccessChecks = () => {}
+  app.addHook('onClose', async () => { stopVoiceAccessChecks() })
   await app.listen({ host: env.SPEEDY_HOST, port: env.SPEEDY_PORT })
+  stopVoiceAccessChecks = startVoiceAccessReconciler(app.log)
 
   // Автоудаление сообщений в каналах с заданным сроком (настройки канала).
   startAutoDeleteSweeper(app.log)

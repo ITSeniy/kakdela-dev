@@ -1,6 +1,7 @@
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { z } from 'zod'
+import { hasPermission } from '@kakdela/ginzu/permissions'
 
 import {
   ChannelCategorySchema,
@@ -23,6 +24,7 @@ import { audit } from '../lib/audit.js'
 import { CHANNEL_DTO_COLS } from '../lib/channel-dto.js'
 import { db } from '../lib/db.js'
 import { purgeFilesForServer } from '../lib/media-gc.js'
+import { finishMemberRevocation } from '../lib/member-revocation.js'
 import {
   assertMember,
   assertPermission,
@@ -34,7 +36,7 @@ import {
 } from '../lib/permissions.js'
 import { loadMemberRoleInfo } from '../lib/roles.js'
 import { presence } from '../presence/store.js'
-import { attachUserToServer, detachUserFromServer, dropServerSubscriptions, serverChannelIds } from '../ws/attach.js'
+import { attachUserToServer, dropServerSubscriptions, serverChannelIds } from '../ws/attach.js'
 import { broadcastToServer } from '../ws/broadcast.js'
 import { registry } from '../ws/registry.js'
 
@@ -632,6 +634,7 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
           401: ErrorBodySchema,
           403: ErrorBodySchema,
           422: ErrorBodySchema,
+          503: ErrorBodySchema,
         },
       },
     },
@@ -649,16 +652,17 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
         })
       }
 
-      await db
-        .delete(serverMembers)
-        .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.userId, userId)))
-
-      // Остальные участники тоже должны узнать о выходе без рефеча.
-      void broadcastToServer(serverId, { t: 'member.leave', serverId, userId })
-
-      // Отвязываем WS-подписки покинувшего (аудит M-8): без этого он
-      // продолжает получать msg.new/presence сервера до дисконнекта.
-      await detachUserFromServer(userId, serverId)
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select({ role: serverMembers.role }).from(serverMembers)
+          .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.userId, userId))).for('update')
+        if (!current) throw forbidden('not a member of this server')
+        if (current.role === 'owner') throw Object.assign(new Error('owner cannot leave'), { statusCode: 422, code: 'owner-cannot-leave' })
+        await tx.delete(memberRoles).where(and(eq(memberRoles.serverId, serverId), eq(memberRoles.userId, userId)))
+        await tx.delete(serverMembers).where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.userId, userId)))
+      })
+      if (!await finishMemberRevocation(userId, serverId, app.log)) {
+        return reply.code(503).send({ error: { code: 'voice-revocation-pending', message: 'Членство удалено; отключение от голосовых комнат будет повторено автоматически.' } })
+      }
 
       return reply.code(204).send(null)
     },
@@ -681,6 +685,7 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
           401: ErrorBodySchema,
           403: ErrorBodySchema,
           404: ErrorBodySchema,
+          503: ErrorBodySchema,
         },
       },
     },
@@ -695,6 +700,13 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
       }
 
       await db.transaction(async (tx) => {
+        // Recheck under row locks: a concurrent promotion/transfer must not kick an owner.
+        await tx.select({ userId: serverMembers.userId }).from(serverMembers)
+          .where(and(eq(serverMembers.serverId, serverId), inArray(serverMembers.userId, [actorId, targetId])))
+          .orderBy(serverMembers.userId).for('update')
+        const currentActor = await getMemberPermissions(actorId, serverId, tx)
+        const currentTarget = await getMemberPermissions(targetId, serverId, tx)
+        if (!hasPermission(currentActor.permissions, 'KICK_MEMBERS') || !canActOnMember(currentActor, currentTarget)) throw forbidden('cannot kick this member')
         await tx
           .delete(memberRoles)
           .where(and(eq(memberRoles.serverId, serverId), eq(memberRoles.userId, targetId)))
@@ -712,10 +724,9 @@ export const serversRoutes: FastifyPluginAsyncZod = async (app) => {
         metadata:   {},
       })
 
-      void broadcastToServer(serverId, { t: 'member.leave', serverId, userId: targetId })
-
-      // Кикнутый тоже отвязывается от подписок (аудит M-8).
-      await detachUserFromServer(targetId, serverId)
+      if (!await finishMemberRevocation(targetId, serverId, app.log)) {
+        return reply.code(503).send({ error: { code: 'voice-revocation-pending', message: 'Членство удалено; отключение от голосовых комнат будет повторено автоматически.' } })
+      }
 
       return reply.code(204).send(null)
     },

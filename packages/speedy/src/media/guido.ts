@@ -8,9 +8,9 @@ import type {
   VoiceTokenMetadata,
 } from './types.js'
 
-// 6 часов. Если человек висит в звонке дольше — клиент переподключится
-// с новым токеном; нет смысла раздувать TTL.
-const TOKEN_TTL_SECONDS = 60 * 60 * 6
+// Short admission TTL reduces exposure of unused tokens. This is NOT revocation:
+// self-hosted LiveKit refreshes tokens and does not invalidate them on removal.
+const TOKEN_TTL_SECONDS = 60
 
 /**
  * LiveKit identity участника: чистый `userId` или `userId:deviceId`, когда
@@ -52,6 +52,7 @@ function getRoomService(): RoomServiceClient {
       adminHost(),
       env.LIVEKIT_API_KEY,
       env.LIVEKIT_API_SECRET,
+      { requestTimeout: 3 },
     )
   }
   return roomServiceSingleton
@@ -93,12 +94,23 @@ export async function revokeUser(args: { userId: string; channelId: string }): P
   const room = voiceRoomName(args.channelId)
   // Identity может быть `userId:deviceId` — кикаем ВСЕ устройства юзера.
   const infos = await listRoomInfos(room)
+  const failures: unknown[] = []
   for (const p of infos) {
     if (userIdFromIdentity(p.identity) !== args.userId) continue
     try {
       await getRoomService().removeParticipant(room, p.identity)
-    } catch { /* уже вышел */ }
+    } catch (err) {
+      if (!isRoomNotFound(err)) failures.push(err)
+    }
   }
+  if (failures.length) throw new AggregateError(failures, 'could not revoke all voice devices')
+}
+
+/** Used by reconciliation, including rooms whose server/channel was deleted. */
+export async function listActiveVoiceChannels(): Promise<string[]> {
+  const rooms = await getRoomService().listRooms()
+  return rooms.map((room) => /^voice-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(room.name)?.[1])
+    .filter((id): id is string => id !== undefined)
 }
 
 export async function listParticipants(channelId: string): Promise<VoiceParticipant[]> {
@@ -178,10 +190,8 @@ export async function muteParticipantMic(args: {
 
 function isRoomNotFound(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false
-  const e = err as { code?: string | number; message?: string; status?: number }
-  if (e.code === 'not_found' || e.code === 404 || e.status === 404) return true
-  if (typeof e.message === 'string' && /not.?found|no.*room|requested room/i.test(e.message)) {
-    return true
-  }
-  return false
+  const e = err as { code?: unknown }
+  // Only the explicit Twirp error means absence. A proxy/route HTTP 404 could
+  // mean a broken admin URL; reporting revocation success would be unsafe.
+  return e.code === 'not_found'
 }
