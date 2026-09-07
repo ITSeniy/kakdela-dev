@@ -79,7 +79,7 @@ services:
     restart: "no"
 
   livekit:
-    image: livekit/livekit-server:latest
+    image: livekit/livekit-server@sha256:b617bb3363f13e880a82164692d842681276bc6eed7da46092f9ddb22017b927
     container_name: kd-livekit
     restart: unless-stopped
     command: ["--config", "/etc/livekit.yaml"]
@@ -90,7 +90,7 @@ services:
       # тот же named volume, что caddy монтирует под /data в app-плоскости.
       # :ro — livekit только читает серт, писать в него не должен.
       - kd-caddy-data:/caddy-certs:ro
-    # 7880 (signaling) наружу НЕ публикуем — он ходит через caddy по WSS
+    # 7880 (admin/upstream) наружу НЕ публикуем; public WSS: Caddy → speedy gateway.
     # (https://<домен>/livekit). Наружу нужны только медиа- и TURN-порты.
     ports:
       - "7881:7881"            # ICE/TCP fallback

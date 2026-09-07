@@ -19,13 +19,15 @@ const EnvSchema = z.object({
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('30d'),
 
-  LIVEKIT_URL: z.string().default('ws://localhost:7880'),
+  LIVEKIT_URL: z.string().url().default('ws://localhost:3001/livekit').refine((value) => {
+    const url = new URL(value)
+    return ['ws:', 'wss:'].includes(url.protocol) && url.pathname === '/livekit' && !url.search && !url.hash && !url.username && !url.password
+  }, 'LIVEKIT_URL must be the public ws(s)://host/livekit gateway, not direct SFU'),
   // Admin-API (twirp, RoomServiceClient). LIVEKIT_URL — публичный signaling
   // для клиентов; speedy же должен ходить в LiveKit напрямую: на VPS это
   // http://livekit:7880 по docker-сети (через публичный домен изнутри
-  // контейнера hairpin обычно не проходит). Не задан → выводится из
-  // LIVEKIT_URL заменой ws→http (достаточно для dev).
-  LIVEKIT_ADMIN_URL: z.string().optional(),
+  // контейнера hairpin обычно не проходит). Dev fallback: http://127.0.0.1:7880.
+  LIVEKIT_ADMIN_URL: z.string().url().refine((value) => ['http:', 'https:'].includes(new URL(value).protocol), 'LIVEKIT_ADMIN_URL must use HTTP(S)').optional(),
   LIVEKIT_API_KEY: z.string().default('devkey'),
   LIVEKIT_API_SECRET: z.string(),
 
@@ -56,6 +58,10 @@ const EnvSchema = z.object({
   LINK_PREVIEWS_ENABLED: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
 
   PUBLIC_ORIGIN: z.string().url().default('http://localhost:1420'),
+}).superRefine((value, context) => {
+  if (value.NODE_ENV === 'production' && !value.LIVEKIT_ADMIN_URL) {
+    context.addIssue({ code: 'custom', path: ['LIVEKIT_ADMIN_URL'], message: 'production requires a private SFU upstream URL' })
+  }
 })
 
 export type Env = z.infer<typeof EnvSchema>

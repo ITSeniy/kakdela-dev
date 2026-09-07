@@ -10,7 +10,7 @@ import { startAutoDeleteSweeper } from './lib/auto-delete.js'
 import { startBirthdaySweeper } from './lib/birthdays.js'
 import { startEventReminders } from './lib/event-reminders.js'
 import { startSecretEnvelopeSweeper } from './lib/secret-sweeper.js'
-import { makeLoggerOptions } from './lib/logger.js'
+import { makeLoggerOptions, installSafeNotFound } from './lib/logger.js'
 import { startMediaGcSweeper } from './lib/media-gc.js'
 import { redis } from './lib/redis.js'
 import { presence } from './presence/store.js'
@@ -48,6 +48,7 @@ async function main() {
   const trustProxy = parseTrustedProxy(env.TRUST_PROXY)
 
   const app = Fastify({ logger: makeLoggerOptions(), trustProxy }).withTypeProvider<ZodTypeProvider>()
+  installSafeNotFound(app)
 
   app.setValidatorCompiler(validatorCompiler)
   app.setSerializerCompiler(serializerCompiler)

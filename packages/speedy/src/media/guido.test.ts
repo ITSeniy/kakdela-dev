@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { jwtVerify } from 'jose'
 import { TrackSource } from 'livekit-server-sdk'
@@ -27,7 +28,7 @@ vi.mock('livekit-server-sdk', async () => {
 const { issueToken, listParticipants, revokeUser, voiceRoomName, livekitIdentity, userIdFromIdentity } =
   await import('./guido.js')
 
-const secret = () => new TextEncoder().encode(process.env.LIVEKIT_API_SECRET!)
+const secret = () => createHmac('sha256', process.env.LIVEKIT_API_SECRET!).update('kakdela/livekit-admission/v1').digest()
 
 beforeEach(() => {
   mocks.listParticipants.mockReset()

@@ -3,6 +3,19 @@
 # TLS-сертификаты Caddy получает сам у Let's Encrypt — нужны только
 # A-записи KD_DOMAIN и s3.KD_DOMAIN на IP VPS и открытые 80/443.
 
+# Runtime/error logs must not contain signaling tickets in request URIs.
+{
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>uri delete
+				request>headers delete
+			}
+		}
+	}
+}
+
 {$KD_DOMAIN} {
 	encode zstd gzip
 
@@ -30,12 +43,10 @@
 		reverse_proxy speedy:3001
 	}
 
-	# LiveKit: signaling (WSS) и twirp-API от speedy. Медиа (UDP/RTP)
-	# идёт мимо Caddy — напрямую в контейнер livekit, см. порты
-	# в docker-compose.prod.yml.
+	# Public signaling ONLY through the admission gateway. No direct SFU/twirp
+	# fallback here; speedy uses LIVEKIT_ADMIN_URL on the private docker network.
 	handle /livekit/* {
-		uri strip_prefix /livekit
-		reverse_proxy livekit:7880
+		reverse_proxy speedy:3001
 	}
 
 	# Web-клиент (SPA): всё остальное — статика с fallback на index.html

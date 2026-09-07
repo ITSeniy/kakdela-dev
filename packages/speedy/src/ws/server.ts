@@ -11,6 +11,7 @@ import { verifyAccessToken } from '../auth/tokens.js'
 import { channels, dmChannels, serverMembers, servers, users } from '../db/schema.js'
 import { db } from '../lib/db.js'
 import { presence } from '../presence/store.js'
+import { createAdmissionGateway } from '../media/admission-gateway.js'
 import { finishHello, startAccessReconciler } from './access.js'
 import { broker } from './broker.js'
 import { broadcastToServer, wireBrokerToRegistry } from './broadcast.js'
@@ -96,6 +97,7 @@ async function authorizeHello(token: string, socket: WebSocket): Promise<HelloRe
 
 export const wsPlugin: FastifyPluginAsync = async (app) => {
   await app.register(fastifyWebsocket, { options: { maxPayload: MAX_WS_PAYLOAD_BYTES } })
+  await app.register(createAdmissionGateway())
   await broker.init()
   const stopDelivery = wireBrokerToRegistry(registry, broker, app.log)
   const stopAccessChecks = startAccessReconciler(app.log)

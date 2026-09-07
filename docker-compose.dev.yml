@@ -67,7 +67,7 @@ services:
       "
 
   livekit:
-    image: livekit/livekit-server:latest
+    image: livekit/livekit-server@sha256:b617bb3363f13e880a82164692d842681276bc6eed7da46092f9ddb22017b927
     container_name: kd-livekit
     restart: unless-stopped
     command: ["--config", "/etc/livekit.yaml", "--dev"]
@@ -80,7 +80,7 @@ services:
     # ВАЖНО: для прод-деплоя нужен host network или явный проброс UDP-диапазона.
     # В dev — на localhost UDP работает нативно.
     ports:
-      - "7880:7880"   # signaling (WSS)
+      - "127.0.0.1:7880:7880"   # private SFU admin/upstream; clients use speedy /livekit
       - "7881:7881"   # TURN (TCP)
       - "7882:7882/udp"  # TURN (UDP)
       - "50000-50100:50000-50100/udp"  # media (RTP)

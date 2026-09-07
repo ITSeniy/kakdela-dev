@@ -1,11 +1,11 @@
-import { AccessToken, RoomServiceClient, TrackSource } from 'livekit-server-sdk'
+import { RoomServiceClient, TrackSource } from 'livekit-server-sdk'
 
 import { env } from '../env.js'
+import { issueAdmissionTicket } from './admission-token.js'
 import type {
   VoiceParticipant,
   VoiceToken,
   VoiceTokenIssueArgs,
-  VoiceTokenMetadata,
 } from './types.js'
 
 // Short admission TTL reduces exposure of unused tokens. This is NOT revocation:
@@ -17,36 +17,36 @@ const TOKEN_TTL_SECONDS = 60
  * клиент представился устройством (мульти-девайс, аудит 2026-08 C-2).
  */
 export function livekitIdentity(userId: string, deviceId?: string): string {
-  return deviceId ? `${userId}:${deviceId}` : userId
+  return deviceId ? `${userId.toLowerCase()}:${deviceId}` : userId.toLowerCase()
 }
 
 /** Обратное преобразование: чистый userId из любой identity. */
 export function userIdFromIdentity(identity: string): string {
   const i = identity.indexOf(':')
-  return i === -1 ? identity : identity.slice(0, i)
+  return (i === -1 ? identity : identity.slice(0, i)).toLowerCase()
 }
 
 export function voiceRoomName(channelId: string): string {
-  return `voice-${channelId}`
+  return `voice-${channelId.toLowerCase()}`
 }
 
 // Комната DM-звонка (T-087). Отдельный префикс от серверных голос-каналов:
 // webhook игнорит `dm-` (см. media/webhook.ts), а состав 1:1-комнаты UI ведёт
 // сам по событиям LiveKit, серверный presence-broadcast здесь не нужен.
 export function dmRoomName(channelId: string): string {
-  return `dm-${channelId}`
+  return `dm-${channelId.toLowerCase()}`
 }
 
 // RoomServiceClient работает по HTTP/HTTPS (twirp). В проде клиенты ходят
 // через Caddy (wss://<домен>/livekit), а speedy — напрямую по docker-сети:
-// LIVEKIT_ADMIN_URL=http://livekit:7880. В dev переменная не нужна —
-// конвертируем схему LIVEKIT_URL (ws://localhost:7880 → http://...).
+// LIVEKIT_ADMIN_URL=http://livekit:7880. В dev fallback — локальный SFU,
+// никогда не публичный LIVEKIT_URL: он теперь указывает на admission gateway.
 function adminHost(): string {
-  return env.LIVEKIT_ADMIN_URL ?? env.LIVEKIT_URL.replace(/^ws(s?):\/\//, 'http$1://')
+  return env.LIVEKIT_ADMIN_URL ?? 'http://127.0.0.1:7880'
 }
 
 let roomServiceSingleton: RoomServiceClient | null = null
-function getRoomService(): RoomServiceClient {
+export function getRoomService(): RoomServiceClient {
   if (!roomServiceSingleton) {
     roomServiceSingleton = new RoomServiceClient(
       adminHost(),
@@ -59,34 +59,8 @@ function getRoomService(): RoomServiceClient {
 }
 
 export async function issueToken(args: VoiceTokenIssueArgs): Promise<VoiceToken> {
-  const {
-    userId,
-    channelId,
-    displayName,
-    deviceId,
-    canPublish = true,
-    canSubscribe = true,
-    canPublishData = true,
-  } = args
-
-  const room = args.room ?? voiceRoomName(channelId)
-  const metadata: VoiceTokenMetadata = { userId }
-
-  const at = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
-    identity: livekitIdentity(userId, deviceId),
-    name: displayName,
-    metadata: JSON.stringify(metadata),
-    ttl: TOKEN_TTL_SECONDS,
-  })
-  at.addGrant({
-    roomJoin: true,
-    room,
-    canPublish,
-    canSubscribe,
-    canPublishData,
-  })
-
-  const token = await at.toJwt()
+  const room = args.room?.toLowerCase() ?? voiceRoomName(args.channelId)
+  const token = await issueAdmissionTicket(args, TOKEN_TTL_SECONDS)
   return { token, url: env.LIVEKIT_URL, room }
 }
 
@@ -96,7 +70,7 @@ export async function revokeUser(args: { userId: string; channelId: string }): P
   const infos = await listRoomInfos(room)
   const failures: unknown[] = []
   for (const p of infos) {
-    if (userIdFromIdentity(p.identity) !== args.userId) continue
+    if (userIdFromIdentity(p.identity) !== args.userId.toLowerCase()) continue
     try {
       await getRoomService().removeParticipant(room, p.identity)
     } catch (err) {
@@ -173,7 +147,7 @@ export async function muteParticipantMic(args: {
   const svc = getRoomService()
   // Identity может быть `userId:deviceId` — глушим все устройства юзера.
   const infos = await listRoomInfos(room)
-  const targets = infos.filter((p) => userIdFromIdentity(p.identity) === args.userId)
+  const targets = infos.filter((p) => userIdFromIdentity(p.identity) === args.userId.toLowerCase())
   for (const info of targets) {
     for (const t of info.tracks) {
       if (t.source !== TrackSource.MICROPHONE) continue

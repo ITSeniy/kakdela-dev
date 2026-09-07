@@ -2,10 +2,14 @@ import { revokeServerVoice, type RevocationLogger } from '../media/revocation.js
 import { revokeConnection } from '../ws/access.js'
 import { broadcastToServer } from '../ws/broadcast.js'
 import { registry } from '../ws/registry.js'
+import { revokeMediaAdmissions } from '../media/admission-gateway.js'
 
 /** Call only after membership removal commits. No client acknowledgement is trusted. */
 export async function finishMemberRevocation(userId: string, serverId: string, log: RevocationLogger): Promise<boolean> {
+  userId = userId.toLowerCase()
+  serverId = serverId.toLowerCase()
   for (const conn of registry.forUser(userId)) revokeConnection(conn, registry, [serverId])
+  revokeMediaAdmissions(userId, serverId)
   // Broker delivery is an optimization. Every worker also checks PostgreSQL on send.
   void broadcastToServer(serverId, { t: 'member.leave', serverId, userId })
     .catch((err: unknown) => log.warn({ err, serverId, userId }, 'membership event publish failed; authoritative checks remain active'))
