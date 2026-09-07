@@ -21,7 +21,8 @@ try {
   const port = docker('port', name, '5432/tcp').split(':').at(-1)
   if (!/^\d+$/.test(port)) throw new Error('unexpected disposable port')
   const env = { ...process.env, AUDIT_DATABASE_URL: 'postgres://postgres:audit-test-only@127.0.0.1:' + port + '/pizza_audit_test' }
-  const result = spawnSync(process.execPath, [vitest, 'run', 'src/routes/audit.integration.test.ts'], { cwd: packageDir, stdio: 'inherit', env, timeout: 120000 })
+  // Suites share one disposable DB: never run their TRUNCATE fixtures in parallel.
+  const result = spawnSync(process.execPath, [vitest, 'run', '--no-file-parallelism', 'src/routes/audit.integration.test.ts', 'src/ws/access.integration.test.ts', 'src/routes/revocation.integration.test.ts'], { cwd: packageDir, stdio: 'inherit', env, timeout: 120000 })
   if (result.error) throw result.error
   process.exitCode = result.status ?? 1
 } finally {
