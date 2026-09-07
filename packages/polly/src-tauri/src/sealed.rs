@@ -7,13 +7,13 @@
 // DEK добывается через `KeyProvider`. Дефолт — `OsKeyProvider`: DEK живёт в
 // OS-keychain (Windows Credential Manager / macOS Keychain / Linux
 // secret-service, крейт keyring), на диске рядом со стором его больше НЕТ
-// (аудит 2026-08, M-4). Если keychain недоступен (headless Linux без
-// secret-service, Android до T-100) — фабрика `default_key_provider`
-// возвращается на `SoftwareKeyProvider` (файл dek.bin, прежний уровень).
+// If the secure keychain is unavailable, fail closed. Never replace a lost
+// key or silently downgrade to an adjacent plaintext DEK file.
 //
 // Формат запечатанного файла: [12 байт nonce][AES-256-GCM ciphertext+tag].
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, KeyInit};
@@ -21,6 +21,10 @@ use aes_gcm::{Aes256Gcm, Key, Nonce};
 use rand::{rngs::OsRng, RngCore, TryRngCore};
 
 use crate::error::CmdError;
+
+#[cfg(test)]
+#[path = "sealed_tests.rs"]
+mod security_tests;
 
 /// Инфолибельный CSPRNG из rand 0.9 (как делает сам libsignal внутри).
 pub fn os_rng() -> impl RngCore + rand::CryptoRng {
@@ -93,17 +97,15 @@ impl KeyProvider for OsKeyProvider {
             return Err(CmdError::internal("no-keychain", "OS keychain unavailable"));
         };
 
-        // 1. Уже в keychain?
-        if let Ok(pw) = entry.get_password() {
-            if let Some(k) = hex_decode32(&pw) {
-                return Ok(k);
-            }
-            // Битая запись — перезапишем ниже.
+        match entry.get_password() {
+            Ok(pw) => return hex_decode32(&pw).ok_or_else(|| CmdError::new("key-recovery-required", "invalid keychain key; refusing to overwrite")),
+            Err(keyring::Error::NoEntry) => {},
+            Err(_) => return Err(CmdError::new("keychain-unavailable", "unlock the OS keychain and retry")),
         }
 
         // 2. Миграция легаси dek.bin (прошлые версии держали DEK рядом со стором).
         let legacy_path = self.dir.join(LEGACY_DEK_FILE);
-        if let Ok(b) = fs::read(&legacy_path) {
+        if let Some(b) = read_legacy_key(&legacy_path)? {
             if b.len() == 32 {
                 let mut k = [0u8; 32];
                 k.copy_from_slice(&b);
@@ -116,7 +118,8 @@ impl KeyProvider for OsKeyProvider {
             }
         }
 
-        // 3. Генерация нового.
+        require_empty_store(&self.dir)?;
+        // 3. Generate only for a genuinely new empty store.
         let mut k = [0u8; 32];
         os_rng().fill_bytes(&mut k);
         entry
@@ -127,7 +130,7 @@ impl KeyProvider for OsKeyProvider {
 }
 
 /// СОФТВАРНЫЙ провайдер: DEK лежит файлом `dek.bin` в каталоге секретов. Это
-/// fallback для окружений без OS-keychain (headless Linux, Android до Keystore).
+/// explicit provider for isolated tests and legacy tooling, NOT a runtime fallback.
 /// Защищает лишь от «прочитал файл», не от рутового доступа.
 pub struct SoftwareKeyProvider {
     path: PathBuf,
@@ -143,7 +146,7 @@ impl SoftwareKeyProvider {
 
 impl KeyProvider for SoftwareKeyProvider {
     fn data_key(&self) -> Result<[u8; 32], CmdError> {
-        if let Ok(b) = fs::read(&self.path) {
+        if let Some(b) = read_legacy_key(&self.path)? {
             if b.len() == 32 {
                 let mut k = [0u8; 32];
                 k.copy_from_slice(&b);
@@ -152,6 +155,7 @@ impl KeyProvider for SoftwareKeyProvider {
         }
         let mut k = [0u8; 32];
         os_rng().fill_bytes(&mut k);
+        require_empty_store(self.path.parent().ok_or_else(|| CmdError::new("bad-path", "missing store directory"))?)?;
         fs::write(&self.path, k)
             .map_err(|e| CmdError::internal("dek-write", &format!("cannot persist DEK: {e}")))?;
         Ok(k)
@@ -159,16 +163,38 @@ impl KeyProvider for SoftwareKeyProvider {
 }
 
 /// Фабрика провайдера для всех сторов (crypto, local history): OS-keychain
-/// если доступен, иначе софтварный файл. Единая точка выбора — чтобы
+/// required in production. A file provider is used only by unit tests so
 /// крипто-стор и история гарантированно жили на ОДНОМ DEK.
+#[cfg(not(test))]
 pub fn default_key_provider(app_data_dir: &Path) -> Result<Box<dyn KeyProvider>, CmdError> {
+    if cfg!(target_os = "android") { return Err(CmdError::new("keychain-unavailable", "Android Keystore support is required")); }
     let dir = data_dir(app_data_dir)?;
     let os = OsKeyProvider::new(&dir);
     if os.available() {
         Ok(Box::new(os))
     } else {
-        Ok(Box::new(SoftwareKeyProvider::new(&dir)))
+        Err(CmdError::new("keychain-unavailable", "secure key storage is required; software fallback is disabled"))
     }
+}
+
+fn read_legacy_key(path: &Path) -> Result<Option<Vec<u8>>, CmdError> {
+    match fs::read(path) {
+        Ok(b) if b.len() == 32 => Ok(Some(b)),
+        Ok(_) => Err(CmdError::new("key-recovery-required", "invalid legacy key; refusing to overwrite")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(CmdError::new("key-recovery-required", "legacy key is not readable")),
+    }
+}
+
+fn require_empty_store(dir: &Path) -> Result<(), CmdError> {
+    let entries = fs::read_dir(dir).map_err(|_| CmdError::new("key-recovery-required", "store is not readable"))?;
+    for entry in entries {
+        let entry = entry.map_err(|_| CmdError::new("key-recovery-required", "store entry is not readable"))?;
+        if entry.file_name() != LEGACY_DEK_FILE {
+            return Err(CmdError::new("key-recovery-required", "encrypted data exists but its key is missing; restore the key, not a new identity"));
+        }
+    }
+    Ok(())
 }
 
 fn cipher(dek: &[u8; 32]) -> Aes256Gcm {
@@ -211,6 +237,11 @@ pub fn write_sealed(
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, &sealed)
         .map_err(|e| CmdError::internal("store-write", &format!("cannot write store: {e}")))?;
+    let mut committed = fs::OpenOptions::new().write(true).open(&tmp)
+        .map_err(|e| CmdError::internal("store-open", &e.to_string()))?;
+    committed.flush().and_then(|_| committed.sync_all())
+        .map_err(|e| CmdError::internal("store-sync", &e.to_string()))?;
+    drop(committed);
     fs::rename(&tmp, path)
         .map_err(|e| CmdError::internal("store-rename", &format!("cannot commit store: {e}")))?;
     Ok(())
@@ -230,4 +261,10 @@ pub fn read_sealed(
     };
     let dek = key_provider.data_key()?;
     Ok(Some(unseal(&dek, &raw)?))
+}
+
+// Test-only: never access the real user keychain from a test process.
+#[cfg(test)]
+pub fn default_key_provider(app_data_dir: &Path) -> Result<Box<dyn KeyProvider>, CmdError> {
+    Ok(Box::new(SoftwareKeyProvider::new(&data_dir(app_data_dir)?)))
 }

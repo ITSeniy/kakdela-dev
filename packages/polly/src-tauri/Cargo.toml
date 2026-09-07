@@ -42,8 +42,7 @@ pollster = "0.4"
 base64 = "0.22"
 # OS-keychain (M-3/M-4 аудита 2026-08): DEK секретных чатов и JWT-сессия —
 # в Windows Credential Manager / macOS Keychain / Linux secret-service.
-# На неподдерживаемых платформах Entry::new вернёт ошибку — вызыватель
-# обязан фолбэчиться на софтварный провайдер (sealed::default_key_provider).
+# Native backends are explicit: keyring otherwise silently selects its mock backend.
 keyring = "3"
 
 # Десктоп-плагины: один экземпляр (повторный запуск фокусирует окно) и
@@ -59,6 +58,7 @@ tauri-plugin-updater = "2"
 # в JS не пробрасывает (notify-rust `.show()` без on_activated). Версия совпадает
 # с той, что тащит notify-rust транзитивно.
 [target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
 tauri-winrt-notification = "0.7"
 # WASAPI loopback-захват звука (T-094 Stage A/B). Версия совпадает с той, что
 # уже в дереве зависимостей (windows 0.61.x) — чтобы не тащить вторую копию.
@@ -77,6 +77,12 @@ windows = { version = "0.61", features = [
 # пути `windows_core::...`, поэтому крейт должен быть доступен под этим именем.
 # Версия совпадает с той, что тянет windows 0.61.x.
 windows-core = "0.61"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

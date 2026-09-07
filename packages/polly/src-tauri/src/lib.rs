@@ -85,6 +85,7 @@ pub fn run() {
             close_call_popup,
             get_call_popup_data,
             commands::crypto_init,
+            commands::crypto_close,
             commands::crypto_publish_keys,
             commands::crypto_topup,
             commands::crypto_process_bundle,

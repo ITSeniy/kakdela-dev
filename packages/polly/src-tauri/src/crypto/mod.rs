@@ -192,6 +192,8 @@ pub fn create(app_data_dir: &Path, self_user_id: &str) -> Result<CryptoCore, Cmd
 }
 
 impl CryptoCore {
+    pub fn owner_id(&self) -> &str { self.store.self_user_id() }
+
     fn persist(&self) -> Result<(), CmdError> {
         store::persist(&self.dir, self.key_provider.as_ref(), &self.store)
     }

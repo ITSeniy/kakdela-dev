@@ -59,7 +59,7 @@ pub struct StoredMessage {
     pub status: Status,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 struct Snapshot {
     next_id: u64,
     messages: Vec<StoredMessage>,
@@ -71,6 +71,10 @@ struct Snapshot {
     // (ratchet уже продвинулся), а конверт завис до retention-чистки.
     #[serde(default)]
     envelope_watermarks: std::collections::HashMap<String, String>,
+    // Exact IDs: pagination may skip poison envelopes; an ordering watermark
+    // must never implicitly mark an unprocessed earlier envelope as seen.
+    #[serde(default)]
+    seen_envelope_ids: std::collections::HashMap<String, std::collections::HashSet<String>>,
 }
 
 pub struct HistoryStore {
@@ -94,11 +98,15 @@ pub fn open_with_provider(
 ) -> Result<HistoryStore, CmdError> {
     let dir = sealed::data_dir(app_data_dir)?;
     let path = dir.join(HISTORY_FILE);
-    let snap = match sealed::read_sealed(&path, key_provider.as_ref())? {
+    let mut snap: Snapshot = match sealed::read_sealed(&path, key_provider.as_ref())? {
         Some(bytes) => serde_json::from_slice(&bytes)
             .map_err(|e| CmdError::internal("deserialize", &format!("history deserialize: {e}")))?,
         None => Snapshot::default(),
     };
+    // Only the exact legacy watermark is known to have been processed.
+    for (peer, id) in snap.envelope_watermarks.drain() {
+        snap.seen_envelope_ids.entry(peer).or_default().insert(id);
+    }
     Ok(HistoryStore {
         path,
         key_provider,
@@ -121,6 +129,7 @@ impl HistoryStore {
         sent_at_ms: u64,
         status: Status,
     ) -> Result<StoredMessage, CmdError> {
+        let before = self.snap.clone();
         let id = self.snap.next_id;
         self.snap.next_id = self.snap.next_id.wrapping_add(1);
         let msg = StoredMessage {
@@ -133,7 +142,7 @@ impl HistoryStore {
             status,
         };
         self.snap.messages.push(msg.clone());
-        self.persist()?;
+        if let Err(err) = self.persist() { self.snap = before; return Err(err); }
         Ok(msg)
     }
 
@@ -150,9 +159,9 @@ impl HistoryStore {
     /// Обработан ли уже этот конверт (дедуп повторной доставки, M-10).
     pub fn is_envelope_seen(&self, peer_user_id: &str, envelope_id: &str) -> bool {
         self.snap
-            .envelope_watermarks
+            .seen_envelope_ids
             .get(peer_user_id)
-            .is_some_and(|last| envelope_id <= last.as_str())
+            .is_some_and(|ids| ids.contains(envelope_id))
     }
 
     /// Запомнить конверт обработанным БЕЗ записи в историю (контрол-конверты
@@ -162,14 +171,9 @@ impl HistoryStore {
         peer_user_id: &str,
         envelope_id: &str,
     ) -> Result<(), CmdError> {
-        let last = self
-            .snap
-            .envelope_watermarks
-            .entry(peer_user_id.to_string())
-            .or_default();
-        if envelope_id > last.as_str() {
-            *last = envelope_id.to_string();
-            self.persist()?;
+        let before = self.snap.clone();
+        if self.snap.seen_envelope_ids.entry(peer_user_id.to_string()).or_default().insert(envelope_id.to_string()) {
+            if let Err(err) = self.persist() { self.snap = before; return Err(err); }
         }
         Ok(())
     }
@@ -186,10 +190,13 @@ impl HistoryStore {
         if self.is_envelope_seen(peer_user_id, envelope_id) {
             return Ok(None);
         }
-        let msg = self.push(peer_user_id, Direction::In, body, sent_at_ms, Status::Delivered)?;
-        // push уже сделал persist; watermark едет тем же снапшотом в следующий
-        // раз, но для надёжности после креша между push и ack отметим сразу.
-        self.mark_envelope_seen(peer_user_id, envelope_id)?;
+        let before = self.snap.clone();
+        self.snap.seen_envelope_ids.entry(peer_user_id.to_string()).or_default().insert(envelope_id.to_string());
+        // Message and exact processed ID are committed in ONE encrypted snapshot.
+        let msg = match self.push(peer_user_id, Direction::In, body, sent_at_ms, Status::Delivered) {
+            Ok(msg) => msg,
+            Err(err) => { self.snap = before; return Err(err); }
+        };
         Ok(Some(msg))
     }
 
@@ -255,7 +262,7 @@ mod tests {
     /// Тестовый стор на софтварном DEK-файле: реальный OS-keychain между
     /// тестами общий, параллельные прогоны затирали бы DEK друг друга.
     fn open_test(dir: &Path) -> HistoryStore {
-        open_with_provider(dir, Box::new(sealed::SoftwareKeyProvider::new(dir)))
+        open_with_provider(dir, Box::new(sealed::SoftwareKeyProvider::new(&sealed::data_dir(dir).expect("secret dir"))))
             .expect("open test store")
     }
 
@@ -319,8 +326,8 @@ mod tests {
             .expect("append");
         assert!(added.is_some());
         assert!(h.is_envelope_seen(peer, "env-0001"));
-        // Меньший id тоже считается увиденным (inbox идёт по возрастанию).
-        assert!(h.is_envelope_seen(peer, "env-0000"));
+        // An earlier poison envelope was never processed and must not disappear.
+        assert!(!h.is_envelope_seen(peer, "env-0000"));
         assert!(!h.is_envelope_seen(peer, "env-0002"));
 
         // Повторная доставка того же конверта (креш до ack) не дублирует.

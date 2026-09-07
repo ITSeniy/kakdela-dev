@@ -48,9 +48,7 @@ fn with_core<T>(
         .0
         .lock()
         .map_err(|_| CmdError::internal("lock-poisoned", "crypto state lock poisoned"))?;
-    if guard.is_none() {
-        *guard = crypto::open(&app_data_dir(app)?)?;
-    }
+    let _ = app; // No implicit reopen after logout.
     let core = guard
         .as_mut()
         .ok_or_else(|| CmdError::new("not-initialized", "call crypto_init first"))?;
@@ -62,6 +60,7 @@ fn with_core<T>(
 pub fn crypto_init(
     app: AppHandle,
     state: State<CryptoState>,
+    history: State<HistoryState>,
     self_user_id: String,
 ) -> Result<(), CmdError> {
     let mut guard = state
@@ -75,6 +74,22 @@ pub fn crypto_init(
             *guard = Some(crypto::create(&dir, &self_user_id)?);
         }
     }
+    let mut history_guard = history.0.lock().map_err(|_| CmdError::internal("lock-poisoned", "history state lock poisoned"))?;
+    if guard.as_ref().map(|core| core.owner_id()) != Some(self_user_id.as_str()) {
+        *guard = None;
+        *history_guard = None;
+        return Err(CmdError::new("account-migration-required", "legacy encrypted store belongs to another account; use a separate profile until explicit migration is available"));
+    }
+    if history_guard.is_none() { *history_guard = Some(local_db::open(&app_data_dir(&app)?)?); }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn crypto_close(state: State<CryptoState>, history: State<HistoryState>) -> Result<(), CmdError> {
+    let mut core = state.0.lock().map_err(|_| CmdError::internal("lock-poisoned", "crypto state lock poisoned"))?;
+    let mut local = history.0.lock().map_err(|_| CmdError::internal("lock-poisoned", "history state lock poisoned"))?;
+    *core = None;
+    *local = None;
     Ok(())
 }
 
@@ -181,10 +196,9 @@ fn with_history<T>(
         .0
         .lock()
         .map_err(|_| CmdError::internal("lock-poisoned", "history state lock poisoned"))?;
-    if guard.is_none() {
-        *guard = Some(local_db::open(&app_data_dir(app)?)?);
-    }
-    f(guard.as_mut().expect("history store loaded"))
+    let _ = app;
+    let history = guard.as_mut().ok_or_else(|| CmdError::new("not-initialized", "call crypto_init first"))?;
+    f(history)
 }
 
 /// Записать своё исходящее сообщение (после успешной отправки на релей).

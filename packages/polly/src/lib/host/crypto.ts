@@ -126,3 +126,6 @@ export async function cryptoSafetyNumber(userId: string): Promise<string> {
 export function secretChatsSupported(): boolean {
   return isTauri()
 }
+
+/** Drop in-memory crypto/history without deleting encrypted data. */
+export async function cryptoClose(): Promise<void> { await call('crypto_close') }
