@@ -12,7 +12,7 @@
 # одноразовым контейнером:
 #   docker compose -f docker-compose.app.yml run --rm speedy pnpm francine migrate
 
-FROM node:20-alpine
+FROM node:24-alpine
 
 WORKDIR /repo
 RUN npm i -g pnpm@9.12.0
@@ -21,6 +21,7 @@ RUN npm i -g pnpm@9.12.0
 # зависимости. Манифесты ВСЕХ workspace-пакетов нужны, иначе frozen-lockfile
 # не пройдёт валидацию (lockfile знает обо всех importers).
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
+COPY patches patches
 COPY packages/ginzu/package.json      packages/ginzu/
 COPY packages/speedy/package.json     packages/speedy/
 COPY packages/francine/package.json   packages/francine/
