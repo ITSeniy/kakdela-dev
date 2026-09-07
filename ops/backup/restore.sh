@@ -50,11 +50,25 @@ if [ -z "$PG_NAME" ]; then
   exit 1
 fi
 
+# v2: pass snapshot-.../pg-....sql.gz; refuse incomplete or modified snapshots.
+if [[ "$PG_NAME" == snapshot-*/* ]]; then
+  SNAPSHOT=${PG_NAME%%/*}
+  [[ "$SNAPSHOT" != *..* && "${PG_NAME#*/}" != */* ]] || exit 1
+  [ -f "$BACKUP_DIR/$SNAPSHOT/COMPLETE" ] || { echo 'incomplete snapshot'; exit 1; }
+  (cd "$BACKUP_DIR/$SNAPSHOT"; sha256sum -c SHA256SUMS) || exit 1
+  BACKUP_DIR="$BACKUP_DIR/$SNAPSHOT"
+  PG_NAME=${PG_NAME#*/}
+else
+  echo 'WARNING: legacy snapshot has no completeness manifest; verify it manually.'
+fi
+[[ "$PG_NAME" =~ ^pg-[0-9]{8}-[0-9]{6}Z.sql.gz$ ]] || { echo 'invalid snapshot name'; exit 1; }
 PG_FILE="$BACKUP_DIR/$PG_NAME"
 if [ ! -f "$PG_FILE" ]; then
   echo "ошибка: $PG_FILE не найден"
   exit 1
 fi
+
+gzip -t "$PG_FILE"
 
 # Соответствующая директория MinIO: pg-<TS>.sql.gz ↔ minio-<TS>/
 TS="${PG_NAME#pg-}"
@@ -99,8 +113,8 @@ if [ $SKIP_MINIO -eq 0 ]; then
   export MC_HOST_dst="${S3_SCHEME}://${S3_ACCESS_KEY}:${S3_SECRET_KEY}@${S3_NETLOC}"
 
   # --remove синхронизирует с удалениями: всё, чего нет в бэкапе, удаляется.
-  mc mirror --overwrite --remove --quiet "$MINIO_DIR/$S3_BUCKET"       "dst/$S3_BUCKET"       || log "warn: main bucket restore partial"
-  mc mirror --overwrite --remove --quiet "$MINIO_DIR/$S3_EMOJI_BUCKET" "dst/$S3_EMOJI_BUCKET" || log "warn: emoji bucket restore partial"
+  mc mirror --overwrite --remove --quiet "$MINIO_DIR/$S3_BUCKET"       "dst/$S3_BUCKET"
+  mc mirror --overwrite --remove --quiet "$MINIO_DIR/$S3_EMOJI_BUCKET" "dst/$S3_EMOJI_BUCKET"
 fi
 
 log "ok: restored from $TS"
