@@ -1,3 +1,5 @@
+import { serialSessionStorage } from '../../lib/session-storage.js'
+import { cryptoClose, secretChatsSupported } from '../../lib/host/crypto.js'
 import type { User } from '@kakdela/ginzu'
 
 import { ApiError, apiFetch, REFRESH_TOKEN_KEY, refreshSession } from '../../lib/api.js'
@@ -14,17 +16,26 @@ const SESSION_KEY = 'kd:session'
 const LEGACY_TOKEN_KEY = 'kd:accessToken'
 
 async function persistSession(user: User, accessToken: string, refreshToken?: string): Promise<void> {
+  const generation = useAuthStore.getState().generation
+  await serialSessionStorage(async () => {
+  if (useAuthStore.getState().generation !== generation) return
   await secrets.set(SESSION_KEY, JSON.stringify({ user, accessToken }))
   // Нативный клиент: сервер отдал refresh в body (X-KD-Client, см. lib/api) —
   // храним рядом, cookie-путь для tauri.localhost не работает (SameSite).
   if (refreshToken) await secrets.set(REFRESH_TOKEN_KEY, refreshToken)
+  })
 }
 
 async function clearSession(): Promise<void> {
+  useAuthStore.getState().clear()
+  if (secretChatsSupported()) {
+    try { await cryptoClose() } catch { console.warn('[auth] native session cleanup failed') }
+  }
+  await serialSessionStorage(async () => {
   await secrets.delete(SESSION_KEY)
   await secrets.delete(LEGACY_TOKEN_KEY)
   await secrets.delete(REFRESH_TOKEN_KEY)
-  useAuthStore.getState().clear()
+  })
 }
 
 export async function lookupInvite(code: string): Promise<InviteInfo> {
@@ -69,17 +80,19 @@ export async function register(params: {
 }
 
 export async function logout(): Promise<void> {
+  const token = useAuthStore.getState().accessToken
+  // Invalidate all in-flight refresh/decrypt work immediately, before I/O.
+  useAuthStore.getState().clear()
+  let refreshToken: string | null = null
+  try { refreshToken = await secrets.get(REFRESH_TOKEN_KEY) } catch { /* ignore */ }
+  await clearSession()
   try {
-    // Нативный клиент отдаёт refresh в body, чтобы сервер отозвал сессию
-    // (cookie у него нет); web-клиенту хватает cookie.
-    let refreshToken: string | null = null
-    try { refreshToken = await secrets.get(REFRESH_TOKEN_KEY) } catch { /* ignore */ }
-    await apiFetch<void>('/api/auth/logout', {
-      method: 'POST',
+    await fetch(SPEEDY_URL + '/api/auth/logout', {
+      method: 'POST', credentials: 'include', signal: AbortSignal.timeout(5000),
+      headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(refreshToken ? { 'Content-Type': 'application/json' } : {}) },
       ...(refreshToken ? { body: JSON.stringify({ refreshToken }) } : {}),
     })
-  } catch { /* ignore network errors on logout */ }
-  await clearSession()
+  } catch { /* local logout succeeds even offline */ }
 }
 
 /**

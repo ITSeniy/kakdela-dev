@@ -1,3 +1,4 @@
+import { serialSessionStorage } from './session-storage.js'
 import type { User } from '@kakdela/ginzu'
 
 import { useAuthStore } from '../features/auth/store.js'
@@ -34,39 +35,39 @@ export class ApiError extends Error {
 const REQUEST_TIMEOUT_MS = 25_000
 
 async function performRefresh(): Promise<string | null> {
-  // Нативный клиент шлёт refresh в body (cookie у него нет); web — cookie.
-  let body: string | undefined
+  const generation = useAuthStore.getState().generation
+  const assertCurrent = () => {
+    if (useAuthStore.getState().generation !== generation) throw new ApiError('session-changed', 'session changed during refresh', 0)
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {
-    const stored = await secrets.get(REFRESH_TOKEN_KEY)
-    if (stored) body = JSON.stringify({ refreshToken: stored })
-  } catch { /* стор недоступен — остаётся cookie-путь */ }
-
-  let res: Response
-  try {
-    res = await fetch(`${SPEEDY_URL}/api/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        ...(body != null ? { 'Content-Type': 'application/json' } : {}),
-        ...NATIVE_CLIENT_HEADERS,
-      },
-      ...(body != null ? { body } : {}),
+    let stored: string | null = null
+    try { stored = await secrets.get(REFRESH_TOKEN_KEY) } catch { /* cookie fallback */ }
+    assertCurrent()
+    const res = await fetch(SPEEDY_URL + '/api/auth/refresh', {
+      method: 'POST', signal: controller.signal, credentials: 'include',
+      headers: { ...(stored ? { 'Content-Type': 'application/json' } : {}), ...NATIVE_CLIENT_HEADERS },
+      ...(stored ? { body: JSON.stringify({ refreshToken: stored }) } : {}),
     })
-  } catch {
-    // Сеть моргнула во время рефреша — НЕ разлогиниваем. Бросаем ошибку:
-    // исходный запрос просто упадёт, сессия останется (повторим позже).
+    assertCurrent()
+    if (res.status === 401) return null
+    if (!res.ok) throw new ApiError('refresh-unavailable', 'session refresh temporarily unavailable', res.status)
+    // Deadline also covers the response body, not just response headers.
+    const data = await res.json() as { accessToken: string; user: User; refreshToken?: string }
+    assertCurrent()
+    if (!data.accessToken || !data.user?.id) throw new ApiError('invalid-response', 'invalid refresh response', 0)
+    await serialSessionStorage(async () => {
+      assertCurrent()
+      if (data.refreshToken) await secrets.set(REFRESH_TOKEN_KEY, data.refreshToken)
+    })
+    assertCurrent()
+    useAuthStore.getState().setSession(data.user, data.accessToken)
+    return data.accessToken
+  } catch (err) {
+    if (err instanceof ApiError) throw err
     throw new ApiError('network-error', friendlyMessage('network-error', 'нет связи с сервером'), 0)
-  }
-  // Ответ получен, но не ok (401) — refresh-токен истёк/отозван: честный логаут.
-  if (!res.ok) return null
-  const data = await res.json() as { accessToken: string; user: User; refreshToken?: string }
-  // Сервер ротирует refresh атомарно — новый токен персистим СРАЗУ, иначе
-  // следующий холодный старт придёт со старым и получит session-revoked.
-  if (data.refreshToken) {
-    try { await secrets.set(REFRESH_TOKEN_KEY, data.refreshToken) } catch { /* не смертельно: доживём на access */ }
-  }
-  useAuthStore.getState().setSession(data.user, data.accessToken)
-  return data.accessToken
+  } finally { clearTimeout(timer) }
 }
 
 // Singleflight: при истечении access-токена сразу несколько запросов ловят
@@ -74,10 +75,16 @@ async function performRefresh(): Promise<string | null> {
 // /refresh, а остальные получают session-revoked → ложный разлогин. Поэтому
 // все параллельные 401 ждут один общий промис обновления.
 let refreshPromise: Promise<string | null> | null = null
+let refreshGeneration = -1
 
 function tryRefresh(): Promise<string | null> {
-  if (!refreshPromise) {
-    refreshPromise = performRefresh().finally(() => { refreshPromise = null })
+  const generation = useAuthStore.getState().generation
+  if (!refreshPromise || refreshGeneration !== generation) {
+    refreshGeneration = generation
+    const pending = performRefresh().finally(() => {
+      if (refreshPromise === pending) refreshPromise = null
+    })
+    refreshPromise = pending
   }
   return refreshPromise
 }
@@ -118,18 +125,20 @@ const TOKEN_FRESH_MARGIN_MS = 30_000
  * (общий с REST). Refresh отвергнут → чистим сессию и возвращаем null.
  */
 export async function ensureFreshAccessToken(): Promise<string | null> {
+  const generation = useAuthStore.getState().generation
   const current = useAuthStore.getState().accessToken
   if (!current) return null
   const exp = tokenExpiresAt(current)
   if (exp === null || exp - Date.now() > TOKEN_FRESH_MARGIN_MS) return current
   try {
     const fresh = await refreshSession()
+    if (useAuthStore.getState().generation !== generation) return null
     if (!fresh) useAuthStore.getState().clear()
     return fresh
   } catch {
     // Сеть лежит — возвращаем как есть: вдруг подключится, а нет так
     // получим 4401 и попробуем снова.
-    return current
+    return useAuthStore.getState().generation === generation ? current : null
   }
 }
 
@@ -161,12 +170,15 @@ async function doRequest(path: string, token: string | null, init?: RequestInit)
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const generation = useAuthStore.getState().generation
   const token = useAuthStore.getState().accessToken
 
   let res = await doRequest(path, token, init)
 
-  if (res.status === 401) {
+  if (useAuthStore.getState().generation !== generation) throw new ApiError('session-changed', 'session changed during request', 0)
+  if (res.status === 401 && !/^\/api\/auth\/(login|register|logout|refresh)$/.test(path)) {
     const fresh = await tryRefresh()
+    if (useAuthStore.getState().generation !== generation) throw new ApiError('session-changed', 'session changed during request', 0)
     if (fresh) {
       res = await doRequest(path, fresh, init)
     } else {
