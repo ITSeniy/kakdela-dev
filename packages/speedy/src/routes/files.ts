@@ -1,3 +1,5 @@
+import { isNull, or } from 'drizzle-orm'
+import type { DbExecutor } from '../lib/db.js'
 import { Buffer } from 'node:buffer'
 
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
@@ -400,19 +402,25 @@ export async function attachFilesToMessage(opts: {
   messageId: string
   /** Подмножество fileIds, помечаемых спойлером. */
   spoilerFileIds?: string[]
+  database?: DbExecutor
 }): Promise<Attachment[]> {
+  if (!opts.database) return db.transaction((tx) => attachFilesToMessage({ ...opts, database: tx }))
+  const database = opts.database
   const { fileIds, ownerId, messageId } = opts
   const spoilerSet = new Set(opts.spoilerFileIds ?? [])
   if (fileIds.length === 0) return []
+  if (new Set(fileIds).size !== fileIds.length || [...spoilerSet].some((id) => !fileIds.includes(id))) {
+    throw Object.assign(new Error('invalid attachment ids'), { statusCode: 422, code: 'invalid-attachments' })
+  }
 
-  const rows = await db
+  const rows = await database
     .select()
     .from(files)
     .where(and(
       inArray(files.id, fileIds),
       eq(files.ownerId, ownerId),
       eq(files.status, 'ready'),
-    ))
+    )).orderBy(files.id).for('update')
 
   // Order by original input — keep client-supplied order so previews and
   // messages render in the same sequence.
@@ -436,19 +444,23 @@ export async function attachFilesToMessage(opts: {
     throw reason
   }
 
-  await db.update(files).set({ messageId }).where(inArray(files.id, fileIds))
+  const claimed = await database.update(files).set({ messageId }).where(and(
+    inArray(files.id, fileIds), eq(files.ownerId, ownerId), eq(files.status, 'ready'),
+    or(isNull(files.messageId), eq(files.messageId, messageId)),
+  )).returning({ id: files.id })
+  if (claimed.length !== fileIds.length) throw Object.assign(new Error('attachment concurrently claimed'), { statusCode: 422, code: 'attachment-reused' })
   const spoilerIds = ordered.map((r) => r.id).filter((id) => spoilerSet.has(id))
   if (spoilerIds.length > 0) {
-    await db.update(files).set({ spoiler: true }).where(inArray(files.id, spoilerIds))
+    await database.update(files).set({ spoiler: true }).where(inArray(files.id, spoilerIds))
   }
 
   return ordered.map((r) => toAttachment({ ...r, spoiler: spoilerSet.has(r.id) }))
 }
 
-export async function loadAttachmentsForMessages(messageIds: string[]): Promise<Map<string, Attachment[]>> {
+export async function loadAttachmentsForMessages(messageIds: string[], database: DbExecutor = db): Promise<Map<string, Attachment[]>> {
   const out = new Map<string, Attachment[]>()
   if (messageIds.length === 0) return out
-  const rows = await db
+  const rows = await database
     .select()
     .from(files)
     .where(and(inArray(files.messageId, messageIds), eq(files.status, 'ready')))

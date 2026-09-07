@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util'
+import type { DbExecutor } from '../lib/db.js'
 import { and, desc, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm'
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { z } from 'zod'
@@ -61,7 +63,7 @@ const MSG_COLS = {
   event:         messages.event,
 }
 
-async function resolveReplies(ids: string[]): Promise<Map<string, ReplyRef>> {
+async function resolveReplies(ids: string[], channelId: string): Promise<Map<string, ReplyRef>> {
   const map = new Map<string, ReplyRef>()
   if (ids.length === 0) return map
   const rows = await db
@@ -79,7 +81,7 @@ async function resolveReplies(ids: string[]): Promise<Map<string, ReplyRef>> {
       eq(serverMembers.serverId, channels.serverId),
       eq(serverMembers.userId, messages.authorId),
     ))
-    .where(inArray(messages.id, ids))
+    .where(and(inArray(messages.id, ids), eq(messages.channelId, channelId)))
   for (const r of rows) {
     map.set(r.id, r.deletedAt !== null
       ? { id: r.id, deleted: true }
@@ -218,6 +220,8 @@ async function persistMentions(opts: {
   messageId: string
   channelId: string
   parsed: ParsedMention[]
+  database?: DbExecutor
+  notify?: boolean
 }): Promise<void> {
   if (opts.parsed.length === 0) return
   const rows = opts.parsed.map((m) => ({
@@ -227,7 +231,11 @@ async function persistMentions(opts: {
   }))
   // ON CONFLICT DO NOTHING для пары (messageId, mentionedUserId) — на случай
   // повторного запуска POST/edit-flow с теми же данными.
-  await db.insert(mentionsTable).values(rows).onConflictDoNothing()
+  await (opts.database ?? db).insert(mentionsTable).values(rows).onConflictDoNothing()
+  if (opts.notify !== false) notifyMentions(opts)
+}
+
+function notifyMentions(opts: { messageId: string; channelId: string; parsed: ParsedMention[] }): void {
   for (const m of opts.parsed) {
     void broadcastToUser(m.userId, {
       t: 'mention',
@@ -457,7 +465,10 @@ async function hydrateMessages(rows: MsgRow[], viewerId: string | null = null) {
   }
 
   const replyIds = [...new Set(rows.map((r) => r.replyToId).filter((id): id is string => id !== null))]
-  const replyMap = await resolveReplies(replyIds)
+  const repliesByChannel = new Map<string, Map<string, ReplyRef>>()
+  for (const channelId of new Set(rows.map((r) => r.channelId))) {
+    repliesByChannel.set(channelId, await resolveReplies(replyIds, channelId))
+  }
   const attachmentsMap = await loadAttachmentsForMessages(msgIds)
   const threadMap = await loadThreadInfoForMessages(msgIds)
   const pollMap = await loadPollsForMessages(rows, viewerId)
@@ -466,7 +477,7 @@ async function hydrateMessages(rows: MsgRow[], viewerId: string | null = null) {
   return rows.map((r) => serializeMessage(
     r,
     reactionsMap.get(r.id) ?? [],
-    r.replyToId ? (replyMap.get(r.replyToId) ?? null) : null,
+    r.replyToId ? (repliesByChannel.get(r.channelId)?.get(r.replyToId) ?? null) : null,
     attachmentsMap.get(r.id) ?? [],
     threadMap.get(r.id) ?? null,
     pollMap.get(r.id) ?? null,
@@ -539,14 +550,14 @@ async function loadThreadInfoForMessages(messageIds: string[]): Promise<Map<stri
  * разрешаем не чаще раза в slowModeSec секунд (счётчик в Redis, NX+EX). При
  * срабатывании — 429 slow-mode с остатком ожидания.
  */
-async function enforceSlowMode(userId: string, channelId: string, serverId: string): Promise<void> {
-  const rows = await db.select({ slow: channels.slowModeSec }).from(channels).where(eq(channels.id, channelId)).limit(1)
+async function enforceSlowMode(userId: string, channelId: string, serverId: string, database: DbExecutor): Promise<void> {
+  const rows = await database.select({ slow: channels.slowModeSec }).from(channels).where(eq(channels.id, channelId)).limit(1)
   const slow = rows[0]?.slow ?? 0
   if (slow <= 0) return
 
   // Управляющие сообщениями/каналами обходят медленный режим (как в Discord).
   try {
-    const ctx = await getMemberPermissions(userId, serverId)
+    const ctx = await getMemberPermissions(userId, serverId, database)
     if (hasPermission(ctx.permissions, 'MANAGE_MESSAGES') || hasPermission(ctx.permissions, 'MANAGE_CHANNELS')) return
   } catch { /* не член — пусть обычная проверка доступа отработает выше */ }
 
@@ -634,6 +645,7 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
         params: z.object({ channelId: z.string().uuid() }),
         body: SendMessageRequestSchema,
         response: {
+          422: ErrorBodySchema,
           201: MessageSchema,
           400: ErrorBodySchema,
           401: ErrorBodySchema,
@@ -660,70 +672,50 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
         return reply.code(400).send({ error: { code: 'voice-channel', message: 'cannot post messages in a voice channel' } })
       }
 
-      // Idempotency: return existing message if same nonce+author
-      if (clientNonce) {
-        const existing = await db
-          .select(MSG_COLS)
-          .from(messages)
-          .where(and(eq(messages.authorId, userId), eq(messages.clientNonce, clientNonce)))
-          .limit(1)
-        if (existing[0]) {
-          const ex = existing[0]
-          // Уникальный индекс (author, nonce) — глобальный. Тот же nonce в
-          // другом канале создать нельзя; раньше молча возвращали старое
-          // сообщение из чужого канала, теперь — явный конфликт.
-          if (ex.channelId !== channelId) {
-            return reply.code(409).send({
-              error: { code: 'client-nonce-reused', message: 'client_nonce already used in another channel' },
-            })
-          }
-          // Полная гидрация (реакции/цитата/вложения/тред/опрос/встреча):
-          // ретрай по таймауту должен вернуть ТОТ ЖЕ DTO, что и первая
-          // отправка, иначе клиент вставит «голую» копию без карточки опроса.
-          const hydrated = (await hydrateMessages([ex], userId))[0]
-          if (!hydrated) throw new Error('hydrateMessages returned no rows for existing message')
-          return reply.code(201).send(hydrated)
-        }
-      }
-
-      // Медленный режим (только серверные каналы; DM не троттлим).
-      if (access.kind === 'server') await enforceSlowMode(userId, channelId, access.serverId)
-
-      const inserted = await db
-        .insert(messages)
-        .values({
-          channelId,
-          authorId: userId,
-          content,
-          replyToId: replyToId ?? null,
-          clientNonce: clientNonce ?? null,
-          gif: gif ?? null,
-          sticker: sticker ?? null,
-          clip: clip ?? null,
-          poll: poll ?? null,
-          event: event ?? null,
-        })
-        .returning(MSG_COLS)
-
-      const msg = inserted[0]
-      if (!msg) throw new Error('insert into messages returned no rows')
-
-      let attachedFiles: Attachment[] = []
-      if (attachmentIds && attachmentIds.length > 0) {
-        attachedFiles = await attachFilesToMessage({
-          fileIds:   attachmentIds,
-          ownerId:   userId,
-          messageId: msg.id,
-          spoilerFileIds: spoilerAttachments,
-        })
-      }
-
       const mentionCtx = await buildMentionContext(userId, channelId)
       const parsedMentions = await resolveMentions(content, userId, mentionCtx)
-      await persistMentions({ messageId: msg.id, channelId, parsed: parsedMentions })
+      const saved = await db.transaction(async (tx) => {
+        // Serialize sends by author: nonce retries and slow-mode checks see committed state.
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`)
+        if (clientNonce) {
+          const [existing] = await tx.select({ ...MSG_COLS, deletedAt: messages.deletedAt }).from(messages)
+            .where(and(eq(messages.authorId, userId), eq(messages.clientNonce, clientNonce))).limit(1)
+          if (existing) {
+            const attached = (await loadAttachmentsForMessages([existing.id], tx)).get(existing.id) ?? []
+            const expected = { content, replyToId: replyToId ?? null, gif: gif ?? null, sticker: sticker ?? null, clip: clip ?? null, poll: poll ?? null, event: event ?? null }
+            const actual = { content: existing.content, replyToId: existing.replyToId, gif: existing.gif, sticker: existing.sticker, clip: existing.clip, poll: existing.poll, event: existing.event }
+            if (existing.channelId !== channelId || existing.deletedAt !== null || !isDeepStrictEqual(actual, expected)
+              || !isDeepStrictEqual(attached.map((f) => f.id).sort(), [...(attachmentIds ?? [])].sort())
+              || !isDeepStrictEqual(attached.filter((f) => f.spoiler).map((f) => f.id).sort(), [...(spoilerAttachments ?? [])].sort())) {
+              throw Object.assign(new Error('client nonce already used with a different payload'), { statusCode: 409, code: 'client-nonce-reused' })
+            }
+            return { msg: existing, attachedFiles: attached, replayed: true }
+          }
+        }
+        if (replyToId) {
+          const parent = await tx.select({ id: messages.id }).from(messages)
+            .where(and(eq(messages.id, replyToId), eq(messages.channelId, channelId), isNull(messages.deletedAt)))
+            .limit(1).for('share')
+          if (!parent[0]) throw Object.assign(new Error('reply target is unavailable in this channel'), { statusCode: 422, code: 'invalid-reply' })
+        }
+        if (access.kind === 'server') await enforceSlowMode(userId, channelId, access.serverId, tx)
+        const [msg] = await tx.insert(messages).values({
+          channelId, authorId: userId, content, replyToId: replyToId ?? null, clientNonce: clientNonce ?? null,
+          gif: gif ?? null, sticker: sticker ?? null, clip: clip ?? null, poll: poll ?? null, event: event ?? null,
+        }).returning(MSG_COLS)
+        if (!msg) throw new Error('insert into messages returned no rows')
+        const attachedFiles = await attachFilesToMessage({
+          fileIds: attachmentIds ?? [], ownerId: userId, messageId: msg.id, spoilerFileIds: spoilerAttachments, database: tx,
+        })
+        await persistMentions({ messageId: msg.id, channelId, parsed: parsedMentions, database: tx, notify: false })
+        return { msg, attachedFiles, replayed: false }
+      })
+      const { msg, attachedFiles } = saved
+      if (saved.replayed) return reply.code(201).send((await hydrateMessages([msg], userId))[0]!)
+      notifyMentions({ messageId: msg.id, channelId, parsed: parsedMentions })
 
       const replyToData = msg.replyToId
-        ? (await resolveReplies([msg.replyToId])).get(msg.replyToId) ?? null
+        ? (await resolveReplies([msg.replyToId], channelId)).get(msg.replyToId) ?? null
         : null
       // Свежий опрос — нулевые счётчики, голосов ещё нет.
       const freshPoll: PollView | null = poll

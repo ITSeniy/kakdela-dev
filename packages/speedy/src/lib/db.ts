@@ -5,3 +5,5 @@ import * as schema from '../db/schema.js'
 
 export const sql = postgres(env.DATABASE_URL)
 export const db = drizzle(sql, { schema })
+
+export type DbExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete' | 'execute'>

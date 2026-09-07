@@ -1,23 +1,19 @@
-// Vitest подгружает этот файл перед всеми тестами и проставляет
-// минимально необходимые env-переменные, чтобы src/env.ts прошёл валидацию.
-// Тесты не должны зависеть от настоящего .env — иначе CI без БД упадёт.
-
+// Never inherit production service credentials/endpoints into tests.
 const defaults: Record<string, string> = {
-  NODE_ENV: 'test',
-  DATABASE_URL: 'postgres://test:test@localhost:5432/test',
-  REDIS_URL: 'redis://localhost:6379',
-  JWT_ACCESS_SECRET: 'a'.repeat(64),
-  JWT_REFRESH_SECRET: 'b'.repeat(64),
-  LIVEKIT_URL: 'ws://localhost:7880',
-  LIVEKIT_API_KEY: 'devkey',
-  LIVEKIT_API_SECRET: 'devsecret_replace_in_prod_replace_in_prod',
-  S3_ENDPOINT: 'http://localhost:9000',
-  S3_ACCESS_KEY: 'test',
-  S3_SECRET_KEY: 'test',
+  NODE_ENV: 'test', TRUST_PROXY: 'false',
+  DATABASE_URL: 'postgres://test:test@127.0.0.1:9/pizza_audit_test',
+  REDIS_URL: 'redis://127.0.0.1:9',
+  JWT_ACCESS_SECRET: 'a'.repeat(64), JWT_REFRESH_SECRET: 'b'.repeat(64),
+  LIVEKIT_URL: 'ws://127.0.0.1:9', LIVEKIT_ADMIN_URL: 'http://127.0.0.1:9',
+  LIVEKIT_API_KEY: 'test', LIVEKIT_API_SECRET: 'test-only-not-for-production-123456789',
+  S3_ENDPOINT: 'http://127.0.0.1:9', S3_PUBLIC_ENDPOINT: 'http://127.0.0.1:9',
+  S3_ACCESS_KEY: 'test', S3_SECRET_KEY: 'test',
 }
-
-for (const [key, value] of Object.entries(defaults)) {
-  if (process.env[key] === undefined) {
-    process.env[key] = value
+if (process.env.AUDIT_DATABASE_URL) {
+  const url = new URL(process.env.AUDIT_DATABASE_URL)
+  if (url.hostname !== '127.0.0.1' || url.pathname !== '/pizza_audit_test' || !url.port || url.port === '5432') {
+    throw new Error('Integration tests require the dedicated disposable database runner')
   }
+  defaults.DATABASE_URL = url.href
 }
+Object.assign(process.env, defaults)

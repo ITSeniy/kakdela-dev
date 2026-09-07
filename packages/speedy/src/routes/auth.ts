@@ -1,3 +1,4 @@
+import type { DbExecutor } from '../lib/db.js'
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { and, eq, gt, isNull, lt, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
@@ -66,10 +67,10 @@ function isNativeClient(req: { headers: Record<string, string | string[] | undef
   return req.headers['x-kd-client'] === 'tauri'
 }
 
-async function issueSession(userId: string, ipAddress: string, userAgent: string | null) {
+async function issueSession(userId: string, ipAddress: string, userAgent: string | null, database: DbExecutor = db) {
   const accessToken = await issueAccessToken(userId)
   const refresh = await issueRefreshToken(userId)
-  await db.insert(sessions).values({
+  await database.insert(sessions).values({
     userId,
     refreshTokenHash: refresh.hash,
     expiresAt: refresh.expiresAt,
@@ -98,89 +99,31 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
       const { inviteCode: rawCode, username, displayName, email, password } = req.body
       const inviteCode = rawCode.toLowerCase().replace(/[^a-z0-9]/g, '')
 
-      // Atomically claim the invite — same guard as POST /api/invites/:code/accept.
-      // Registration and invite claim happen together; if the user insert fails
-      // with a uniqueness conflict we roll the counter back below, so a known
-      // taken username can't be used to burn someone's single-use invite.
-      const claimedInvite = await db
-        .update(invites)
-        .set({ useCount: sql`${invites.useCount} + 1` })
-        .where(
-          and(
-            eq(invites.code, inviteCode),
-            eq(invites.revoked, false),
-            or(isNull(invites.expiresAt), gt(invites.expiresAt, sql`NOW()`)),
-            or(isNull(invites.maxUses), lt(invites.useCount, invites.maxUses)),
-          ),
-        )
-        .returning({ serverId: invites.serverId })
-
-      const inviteRow = claimedInvite[0]
-      if (!inviteRow) {
-        const exists = await db
-          .select({ code: invites.code })
-          .from(invites)
-          .where(eq(invites.code, inviteCode))
-          .limit(1)
-        if (!exists[0]) {
-          return reply.code(400).send({ error: { code: 'invite-not-found', message: 'invite code not found' } })
-        }
-        return reply.code(400).send({ error: { code: 'invite-expired', message: 'invite is expired, revoked, or exhausted' } })
-      }
-
       const passwordHash = await hashPassword(password)
-
-      let inserted: DbUser
-      try {
-        const rows = await db
-          .insert(users)
-          // Имя приходит со второго шага регистрации (PATCH /me); до тех пор
-          // показываем username.
-          .values({ username, displayName: displayName ?? username, email, passwordHash })
-          .returning()
-        const row = rows[0]
-        if (!row) throw new Error('insert into users returned no rows')
-        inserted = row
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        if (msg.includes('users_username_unique') || msg.includes('users_email_unique')) {
-          // Компенсация: инвайт был «сожжён» инкрементом до INSERT юзера.
-          // Откатываем счётчик, иначе зная занятый username можно исчерпать
-          // одноразовый инвайт чужим запросом.
-          await db
-            .update(invites)
-            .set({ useCount: sql`GREATEST(${invites.useCount} - 1, 0)` })
-            .where(eq(invites.code, inviteCode))
-          if (msg.includes('users_username_unique')) {
-            return reply.code(409).send({ error: { code: 'username-taken', message: 'username already in use' } })
-          }
-          return reply.code(409).send({ error: { code: 'email-taken', message: 'email already in use' } })
-        }
-        throw err
-      }
-
-      const memberRows = await db
-        .insert(serverMembers)
-        .values({ serverId: inviteRow.serverId, userId: inserted.id })
-        .onConflictDoNothing()
-        .returning({ role: serverMembers.role, joinedAt: serverMembers.joinedAt })
-      // Уже подключённым участникам — событие для обновления списка. Сам
-      // новичок WS ещё не поднимал, hot-attach ему не нужен.
-      const member = memberRows[0]
-      if (member) {
-        void broadcastToServer(inviteRow.serverId, {
-          t: 'member.join',
-          member: {
-            serverId: inviteRow.serverId,
-            userId:   inserted.id,
-            role:     member.role,
-            joinedAt: member.joinedAt.toISOString(),
-          },
-        })
-      }
-
       const { ipAddress, userAgent } = clientMeta(req)
-      const { accessToken, refresh } = await issueSession(inserted.id, ipAddress, userAgent)
+      const result = await db.transaction(async (tx) => {
+        const [invite] = await tx.update(invites).set({ useCount: sql`${invites.useCount} + 1` })
+          .where(and(eq(invites.code, inviteCode), eq(invites.revoked, false),
+            or(isNull(invites.expiresAt), gt(invites.expiresAt, sql`NOW()`)),
+            or(isNull(invites.maxUses), lt(invites.useCount, invites.maxUses)))).returning({ serverId: invites.serverId })
+        if (!invite) throw Object.assign(new Error('invite is expired, revoked, exhausted or missing'), { statusCode: 400, code: 'invite-expired' })
+        const [inserted] = await tx.insert(users).values({ username, displayName: displayName ?? username, email, passwordHash }).returning()
+        if (!inserted) throw new Error('insert into users returned no rows')
+        const [member] = await tx.insert(serverMembers).values({ serverId: invite.serverId, userId: inserted.id })
+          .returning({ role: serverMembers.role, joinedAt: serverMembers.joinedAt })
+        const session = await issueSession(inserted.id, ipAddress, userAgent, tx)
+        return { inserted, invite, member, ...session }
+      }).catch((err: unknown) => {
+        const cause = err as { message?: string; constraint_name?: string; cause?: { message?: string; constraint_name?: string } }
+        const detail = [cause.message, cause.constraint_name, cause.cause?.message, cause.cause?.constraint_name].join(' ')
+        if (detail.includes('users_username_unique')) throw Object.assign(new Error('username already in use'), { statusCode: 409, code: 'username-taken' })
+        if (detail.includes('users_email_unique')) throw Object.assign(new Error('email already in use'), { statusCode: 409, code: 'email-taken' })
+        throw err
+      })
+      const { inserted, accessToken, refresh, invite, member } = result
+      if (member) void broadcastToServer(invite.serverId, { t: 'member.join', member: {
+        serverId: invite.serverId, userId: inserted.id, role: member.role, joinedAt: member.joinedAt.toISOString(),
+      } })
 
       void reply.setCookie(REFRESH_COOKIE, refresh.token, refreshCookieOptions(refresh.expiresAt))
       return reply.code(200).send({
@@ -314,24 +257,16 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
       }
 
       const tokenHash = hashRefreshToken(token)
-      // Атомарно удаляем старую сессию — если её нет, значит токен уже
-      // ротирован/отозван и принимать его нельзя.
-      const deleted = await db
-        .delete(sessions)
-        .where(eq(sessions.refreshTokenHash, tokenHash))
-        .returning({ id: sessions.id, userId: sessions.userId })
-      if (deleted.length === 0) {
-        return reply.code(401).send({ error: { code: 'session-revoked', message: 'session no longer valid' } })
-      }
-
-      const userRows = await db.select().from(users).where(eq(users.id, verified.payload.sub)).limit(1)
-      const user = userRows[0]
-      if (!user) {
-        return reply.code(401).send({ error: { code: 'unauthorized', message: 'user gone' } })
-      }
-
       const { ipAddress, userAgent } = clientMeta(req)
-      const { accessToken, refresh } = await issueSession(user.id, ipAddress, userAgent)
+      const { user, accessToken, refresh } = await db.transaction(async (tx) => {
+        const [old] = await tx.delete(sessions).where(and(
+          eq(sessions.refreshTokenHash, tokenHash), eq(sessions.userId, verified.payload.sub), gt(sessions.expiresAt, new Date()),
+        )).returning({ id: sessions.id })
+        if (!old) throw Object.assign(new Error('session no longer valid'), { statusCode: 401, code: 'session-revoked' })
+        const [user] = await tx.select().from(users).where(eq(users.id, verified.payload.sub)).limit(1)
+        if (!user) throw Object.assign(new Error('user gone'), { statusCode: 401, code: 'unauthorized' })
+        return { user, ...await issueSession(user.id, ipAddress, userAgent, tx) }
+      })
 
       void reply.setCookie(REFRESH_COOKIE, refresh.token, refreshCookieOptions(refresh.expiresAt))
       return reply.code(200).send({

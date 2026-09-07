@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm'
 import { ALL_PERMISSIONS, Permissions, hasPermission, type PermissionFlag } from '@kakdela/ginzu/permissions'
 
 import { channels, dmChannels, memberRoles, serverMembers, serverRoles } from '../db/schema.js'
-import { db } from './db.js'
+import { db, type DbExecutor } from './db.js'
 
 export type MemberRole = 'owner' | 'admin' | 'member'
 
@@ -24,8 +24,8 @@ export function notFound(code: string, message: string): Error {
   return makeError(404, code, message)
 }
 
-export async function assertMember(userId: string, serverId: string): Promise<{ role: MemberRole }> {
-  const rows = await db
+export async function assertMember(userId: string, serverId: string, database: DbExecutor = db): Promise<{ role: MemberRole }> {
+  const rows = await database
     .select({ role: serverMembers.role })
     .from(serverMembers)
     .where(and(eq(serverMembers.serverId, serverId), eq(serverMembers.userId, userId)))
@@ -59,14 +59,14 @@ export interface MemberPermissionContext {
  * назначенные роли, плюс builtin admin даёт ADMINISTRATOR. Бросает forbidden,
  * если user не состоит в сервере.
  */
-export async function getMemberPermissions(userId: string, serverId: string): Promise<MemberPermissionContext> {
-  const { role } = await assertMember(userId, serverId)
+export async function getMemberPermissions(userId: string, serverId: string, database: DbExecutor = db): Promise<MemberPermissionContext> {
+  const { role } = await assertMember(userId, serverId, database)
   if (role === 'owner') {
     return { role, permissions: ALL_PERMISSIONS, position: OWNER_POSITION }
   }
 
   // @everyone базовая маска.
-  const everyoneRows = await db
+  const everyoneRows = await database
     .select({ permissions: serverRoles.permissions })
     .from(serverRoles)
     .where(and(eq(serverRoles.serverId, serverId), eq(serverRoles.isEveryone, true)))
@@ -74,7 +74,7 @@ export async function getMemberPermissions(userId: string, serverId: string): Pr
   let mask = everyoneRows[0]?.permissions ?? 0
 
   // Назначенные кастомные роли.
-  const assigned = await db
+  const assigned = await database
     .select({ permissions: serverRoles.permissions, position: serverRoles.position })
     .from(memberRoles)
     .innerJoin(serverRoles, eq(memberRoles.roleId, serverRoles.id))
