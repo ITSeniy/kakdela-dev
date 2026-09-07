@@ -1,6 +1,6 @@
 import type { Connection } from './connection.js'
 
-class Registry {
+export class Registry {
   private readonly byUser = new Map<string, Set<Connection>>()
   private readonly byChannel = new Map<string, Set<Connection>>()
   private readonly byServer = new Map<string, Set<Connection>>()
@@ -93,6 +93,10 @@ class Registry {
   forUser(userId: string): Connection[] {
     const set = this.byUser.get(userId)
     return set ? Array.from(set) : []
+  }
+
+  all(): Connection[] {
+    return [...this.byUser.values()].flatMap((connections) => [...connections])
   }
 
   size(): number {

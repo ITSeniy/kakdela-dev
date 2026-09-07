@@ -6,7 +6,7 @@ import { redis } from '../lib/redis.js'
 
 const KEY_PREFIX = 'kakdela:ws:'
 
-export type BrokerHandler = (topic: string, event: ServerEvent) => void
+export type BrokerHandler = (topic: string, event: ServerEvent) => void | Promise<void>
 
 export interface Broker {
   publish(topic: string, event: ServerEvent): Promise<void>

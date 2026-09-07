@@ -10,6 +10,7 @@ export class Connection {
   readonly subscribedServers = new Set<string>()
 
   private pendingPings = 0
+  private closed = false
   private pingTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
@@ -22,14 +23,18 @@ export class Connection {
     for (const id of channelIds) this.subscribedChannels.add(id)
   }
 
+  get isActive(): boolean { return !this.closed && this.ws.readyState === this.ws.OPEN }
+
   send(event: ServerEvent): void {
-    if (this.ws.readyState !== this.ws.OPEN) return
+    if (!this.isActive) return
     try {
       this.ws.send(JSON.stringify(event))
     } catch { /* socket already gone */ }
   }
 
   close(code: number, reason: string): void {
+    this.closed = true
+    this.cleanup()
     try { this.ws.close(code, reason) } catch { /* already closed */ }
   }
 

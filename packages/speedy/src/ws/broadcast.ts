@@ -1,7 +1,8 @@
 import type { ServerEvent } from '@kakdela/ginzu/ws-events'
 
-import { broker } from './broker.js'
-import { registry } from './registry.js'
+import { canReceive, reconcileConnection, revokeConnection, withUserAccess } from './access.js'
+import { broker, type Broker } from './broker.js'
+import { registry, type Registry } from './registry.js'
 
 export async function broadcastToChannel(channelId: string, event: ServerEvent): Promise<void> {
   await broker.publish('channel:' + channelId, event)
@@ -15,35 +16,55 @@ export async function broadcastToUser(userId: string, event: ServerEvent): Promi
   await broker.publish('user:' + userId, event)
 }
 
-export function wireBrokerToRegistry(): void {
-  broker.onMessage((topic, event) => {
-    if (event.t === 'member.leave') {
-      for (const conn of registry.forUser(event.userId)) {
-        registry.remove(conn)
-        conn.subscribedChannels.clear()
-        conn.subscribedServers.clear()
-        conn.close(4001, 'membership-changed')
-      }
+export function wireBrokerToRegistry(
+  target: Registry = registry,
+  transport: Broker = broker,
+  log?: { warn: (obj: object, message: string) => void },
+): () => void {
+  let tail = Promise.resolve()
+  let pending = 0
+  let disposed = false
+  transport.onMessage((topic, event) => {
+    if (disposed) return Promise.resolve()
+    // Bound queued payloads if the database is slow. Never fall back to unchecked sends.
+    if (pending >= 128) {
+      for (const conn of target.all()) revokeConnection(conn, target)
+      log?.warn({}, 'ws delivery queue full; connections closed')
+      return Promise.resolve()
     }
-    if (topic.startsWith('channel:')) {
-      const channelId = topic.slice('channel:'.length)
-      for (const conn of registry.forChannel(channelId)) {
-        conn.send(event)
+    pending += 1
+    const delivery = tail.then(async () => {
+      if (disposed) return
+      if (event.t === 'member.leave') {
+        for (const conn of target.forUser(event.userId)) revokeConnection(conn, target, [event.serverId])
       }
-      return
-    }
-    if (topic.startsWith('server:')) {
-      const serverId = topic.slice('server:'.length)
-      for (const conn of registry.forServer(serverId)) {
-        conn.send(event)
+      if (event.t === 'server.delete' && topic === 'server:' + event.serverId) {
+        for (const conn of target.forServer(event.serverId)) {
+          conn.send(event)
+          revokeConnection(conn, target, [event.serverId])
+        }
+        return
       }
-      return
-    }
-    if (topic.startsWith('user:')) {
-      const userId = topic.slice('user:'.length)
-      for (const conn of registry.forUser(userId)) {
-        conn.send(event)
+      const connections = topic.startsWith('channel:') ? target.forChannel(topic.slice(8))
+        : topic.startsWith('server:') ? target.forServer(topic.slice(7))
+          : topic.startsWith('user:') ? target.forUser(topic.slice(5)) : []
+      try {
+        await withUserAccess(connections.map((c) => c.userId), (snapshots) => {
+          for (const conn of connections) {
+            const access = snapshots.get(conn.userId)
+            if (reconcileConnection(conn, access, target) && access && canReceive(topic, event, conn.userId, access)) conn.send(event)
+          }
+        })
+      } catch (err) {
+        for (const conn of connections) revokeConnection(conn, target)
+        log?.warn({ err }, 'ws delivery denied: access checks unavailable')
       }
-    }
+    }).catch((err: unknown) => {
+      for (const conn of target.all()) revokeConnection(conn, target)
+      log?.warn({ err }, 'ws delivery failed closed')
+    }).finally(() => { pending -= 1 })
+    tail = delivery
+    return delivery
   })
+  return () => { disposed = true; transport.onMessage(() => {}) }
 }

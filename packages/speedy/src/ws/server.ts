@@ -11,6 +11,7 @@ import { verifyAccessToken } from '../auth/tokens.js'
 import { channels, dmChannels, serverMembers, servers, users } from '../db/schema.js'
 import { db } from '../lib/db.js'
 import { presence } from '../presence/store.js'
+import { finishHello, startAccessReconciler } from './access.js'
 import { broker } from './broker.js'
 import { broadcastToServer, wireBrokerToRegistry } from './broadcast.js'
 import { Connection } from './connection.js'
@@ -40,7 +41,7 @@ function publicUser(row: DbUser): User {
 
 interface HelloResult {
   conn: Connection
-  ready: ServerEvent
+  ready: Extract<ServerEvent, { t: 'ready' }>
 }
 
 async function authorizeHello(token: string, socket: WebSocket): Promise<HelloResult | null> {
@@ -96,7 +97,9 @@ async function authorizeHello(token: string, socket: WebSocket): Promise<HelloRe
 export const wsPlugin: FastifyPluginAsync = async (app) => {
   await app.register(fastifyWebsocket, { options: { maxPayload: MAX_WS_PAYLOAD_BYTES } })
   await broker.init()
-  wireBrokerToRegistry()
+  const stopDelivery = wireBrokerToRegistry(registry, broker, app.log)
+  const stopAccessChecks = startAccessReconciler(app.log)
+  app.addHook('onClose', async () => { stopAccessChecks(); stopDelivery(); await broker.close() })
 
   const socketsPerIp = new Map<string, number>()
   function acquireIpSlot(ip: string): boolean {
@@ -132,6 +135,7 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
     let helloed = false
     let helloPending = false
     let socketClosed = false
+    let presenceAdded = false
     let frameWindow = Date.now()
     let frameCount = 0
 
@@ -172,24 +176,30 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
           return
         }
         helloPending = true
-        void authorizeHello(ev.token, socket).then((result) => {
-          helloPending = false
+        void authorizeHello(ev.token, socket).then(async (result) => {
           if (!result) {
             try { socket.close(4401, 'unauthorized') } catch { /* ignore */ }
             return
           }
-          helloed = true
           if (socketClosed || socket.readyState !== 1) return
-          if (registry.forUser(result.conn.userId).length >= 10) {
-            socket.close(4429, 'too-many-user-connections'); return
-          }
           conn = result.conn
+          const attached = await finishHello(result.conn, result.ready)
+          helloPending = false
+          if (!attached || socketClosed || !result.conn.isActive) {
+            registry.remove(result.conn)
+            result.conn.cleanup()
+            if (!socketClosed) result.conn.close(4401, 'unauthorized')
+            return
+          }
+          helloed = true
           clearTimeout(helloTimeout)
-          registry.add(result.conn)
-          result.conn.send(result.ready)
-          result.conn.startHeartbeat()
 
-          void presence.addConnection(result.conn.userId).then((p) => {
+          void presence.addConnection(result.conn.userId).then(async (p) => {
+            if (socketClosed || !result.conn.isActive) {
+              await presence.removeConnection(result.conn.userId)
+              return
+            }
+            presenceAdded = true
             if (!p.broadcast) return
             for (const sid of result.conn.subscribedServers) {
               void broadcastToServer(sid, {
@@ -209,7 +219,9 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
         return
       }
 
-      if (conn) dispatchClientEvent(conn, ev)
+      if (conn) void dispatchClientEvent(conn, ev).catch((err: unknown) => {
+        app.log.warn({ err }, 'ws: client event failed')
+      })
     })
 
     socket.on('close', () => {
@@ -219,9 +231,12 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
       if (conn) {
         conn.cleanup()
         registry.remove(conn)
-        void presence.removeConnection(conn.userId).catch((err: unknown) => {
-          app.log.warn({ err }, 'ws: presence.removeConnection failed')
-        })
+        if (presenceAdded) {
+          presenceAdded = false
+          void presence.removeConnection(conn.userId).catch((err: unknown) => {
+            app.log.warn({ err }, 'ws: presence.removeConnection failed')
+          })
+        }
       }
     })
 

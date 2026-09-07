@@ -10,6 +10,7 @@ import { eq } from 'drizzle-orm'
 import { channels } from '../db/schema.js'
 import { db } from '../lib/db.js'
 import { registry } from './registry.js'
+import { withUserAccess } from './access.js'
 
 export async function serverChannelIds(serverId: string): Promise<string[]> {
   const rows = await db
@@ -28,10 +29,17 @@ export async function attachUserToServer(userId: string, serverId: string): Prom
   const conns = registry.forUser(userId)
   if (conns.length === 0) return
   const channelIds = await serverChannelIds(serverId)
-  for (const conn of conns) {
-    registry.subscribeServer(conn, serverId)
-    for (const channelId of channelIds) registry.subscribeChannel(conn, channelId)
-  }
+  await withUserAccess([userId], (snapshots) => {
+    const access = snapshots.get(userId)
+    if (!access?.exists || !access.servers.has(serverId)) return
+    for (const conn of registry.forUser(userId)) {
+      if (!conn.isActive) continue
+      registry.subscribeServer(conn, serverId)
+      for (const channelId of channelIds) {
+        if (access.channels.has(channelId)) registry.subscribeChannel(conn, channelId)
+      }
+    }
+  })
 }
 
 /**
