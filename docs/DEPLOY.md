@@ -4,6 +4,8 @@
 
 ## Как это устроено
 
+> Обновление 3-B: public signaling теперь проходит через admission gateway speedy. Перед обновлением существующего окружения выполните порядок из [audit-admission.md](../audit-admission.md): прямой SFU 7880 должен быть закрыт, старые SFU-сессии — завершены в согласованное окно. Один reload Caddy не включает полную гарантию отзыва.
+
 Два compose-файла, общая docker-сеть `kd-net`:
 
 | Файл | Сервисы | Зачем отдельно |
@@ -16,7 +18,7 @@ Caddy терминирует TLS (сертификаты Let's Encrypt полу�
 ```
 https://<домен>/api/*      → speedy:3001     REST
 wss://<домен>/ws           → speedy:3001     WebSocket-события
-wss://<домен>/livekit/*    → livekit:7880    голос/демо (signaling)
+wss://<домен>/livekit/*    → speedy:3001     admission → private livekit:7880
 https://<домен>/*          → статика          web-клиент (Polly без Tauri)
 https://s3.<домен>/*       → minio:9000      файлы, аватарки, emoji
 ```
@@ -27,7 +29,7 @@ https://s3.<домен>/*       → minio:9000      файлы, аватарки
 
 - **VPS**: 2 vCPU / 2 GB RAM / 20 GB диска — достаточно для 15–20 человек. Публичный IPv4.
 - **Домен** и доступ к DNS.
-- Локально (для сборки desktop-клиента): этот репозиторий, Node 20+, pnpm 9, Rust-тулчейн Tauri.
+- Локально (для сборки desktop-клиента): этот репозиторий, Node 24, pnpm 9, Rust-тулчейн Tauri.
 
 ### DNS
 

@@ -75,7 +75,7 @@ on the Cyrillic product name «как дела» under the `en-US` culture.
 
 - **All mutations** (send message, react, edit) go through **REST**, not WebSocket.
 - **WebSocket** is receive-only for the client: it receives change notifications and triggers TanStack Query invalidation.
-- **Voice/screen share** uses LiveKit directly from the client. The server issues a JWT token via `POST /api/voice/:channelId/join`; the client connects to LiveKit using that token. LiveKit webhooks call back to `POST /api/internal/livekit-webhook`.
+- **Voice/screen share** keeps media transport on LiveKit, but public signaling goes through speedy `/livekit`. `POST /api/voice/:channelId/join` issues a gateway-only ticket; admission verifies PostgreSQL membership and elevates a restricted SFU bootstrap session under a membership lock before releasing signaling. SFU admin/signaling 7880 stays private; full reconnect is required. See `audit-admission.md` for rollout prerequisites. LiveKit webhooks still call `POST /api/internal/livekit-webhook`.
 
 ### Key files
 
