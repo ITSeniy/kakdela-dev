@@ -1,0 +1,37 @@
+name: Audit regressions
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  javascript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm --filter @kakdela/speedy test
+      - run: node ops/test-postgres.mjs
+      - run: bash ops/backup/backup.test.sh
+      - run: pnpm build
+      - run: pnpm audit --audit-level=high
+      - run: docker build -f packages/speedy/Dockerfile -t pizza-audit-ci .
+  native-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+      - run: cargo test --manifest-path packages/polly/src-tauri/Cargo.toml --locked --lib --no-default-features
+      - run: cargo check --manifest-path packages/polly/src-tauri/Cargo.toml --locked --lib
