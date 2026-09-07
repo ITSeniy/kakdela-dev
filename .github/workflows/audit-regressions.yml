@@ -19,9 +19,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      - run: pnpm --filter @kakdela/speedy exec tsc -p tsconfig.admission-tests.json
       - run: pnpm lint
       - run: pnpm --filter @kakdela/speedy test
       - run: node ops/test-postgres.mjs
+      - run: docker pull livekit/livekit-server@sha256:b617bb3363f13e880a82164692d842681276bc6eed7da46092f9ddb22017b927
+      - run: npm ci --ignore-scripts
+        working-directory: ops/media-smoke
+      - run: node ops/test-admission.mjs --media
+      - run: node ops/test-livekit.mjs
       - run: bash ops/backup/backup.test.sh
       - run: pnpm build
       - run: pnpm audit --audit-level=high

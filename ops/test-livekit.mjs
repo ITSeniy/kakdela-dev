@@ -13,7 +13,7 @@ const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', tim
 let created = false
 try {
   // Pin to the cached image ID for this run; do not pull or change the user's image.
-  const image = docker('image', 'inspect', 'livekit/livekit-server:latest', '--format', '{{.Id}}')
+  const image = docker('image', 'inspect', 'livekit/livekit-server@sha256:b617bb3363f13e880a82164692d842681276bc6eed7da46092f9ddb22017b927', '--format', '{{.Id}}')
   if (!/^sha256:[0-9a-f]{64}$/.test(image)) throw new Error('invalid cached image ID')
   console.log('Disposable LiveKit image:', image)
   docker('create', '--pull=never', '--name', name, '--label', 'pizza.revocation.disposable=true', '--memory=512m', '-p', '127.0.0.1::7880', image, '--dev', '--bind', '0.0.0.0', '--keys', 'auditkey: synthetic-audit-livekit-secret-32chars')

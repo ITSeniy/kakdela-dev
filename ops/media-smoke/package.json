@@ -1,0 +1,9 @@
+{
+  "name": "pizza-admission-media-smoke",
+  "private": true,
+  "type": "module",
+  "description": "Opt-in synthetic-audio client for disposable admission tests; never a production dependency",
+  "dependencies": {
+    "@livekit/rtc-node": "0.13.34"
+  }
+}

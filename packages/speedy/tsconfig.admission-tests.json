@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "rootDir": ".", "noEmit": true },
+  "include": ["src/media/admission*.ts", "src/media/livekit.integration.test.ts", "src/lib/logger.test.ts", "src/auth/middleware.ts", "test/admission-worker.ts"],
+  "exclude": ["dist", "node_modules"]
+}
