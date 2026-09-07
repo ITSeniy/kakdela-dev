@@ -45,17 +45,24 @@ export const keysRoutes: FastifyPluginAsyncZod = async (app) => {
         kyberPreKeySig:  body.kyberPrekey.signature,
         updatedAt:       new Date(),
       }
-      await db
+      await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${'keys:' + userId}, 0))`)
+      const [previous] = await tx.select().from(secretIdentities).where(eq(secretIdentities.userId, userId)).limit(1)
+      if (previous && previous.identityKey !== body.identityKey) {
+        await tx.delete(secretOneTimePrekeys).where(eq(secretOneTimePrekeys.userId, userId))
+      }
+      await tx
         .insert(secretIdentities)
         .values({ userId, ...identityValues })
         .onConflictDoUpdate({ target: secretIdentities.userId, set: identityValues })
 
       if (body.oneTimePrekeys.length > 0) {
-        await db
+        await tx
           .insert(secretOneTimePrekeys)
           .values(body.oneTimePrekeys.map((k) => ({ userId, keyId: k.keyId, pubKey: k.pubKey })))
           .onConflictDoNothing()
       }
+      })
 
       return reply.code(204).send(null)
     },
@@ -74,10 +81,16 @@ export const keysRoutes: FastifyPluginAsyncZod = async (app) => {
     },
     async (req, reply) => {
       const userId = req.authUser!.id
-      await db
-        .insert(secretOneTimePrekeys)
-        .values(req.body.oneTimePrekeys.map((k) => ({ userId, keyId: k.keyId, pubKey: k.pubKey })))
-        .onConflictDoNothing()
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${'keys:' + userId}, 0))`)
+        const [identity] = await tx.select().from(secretIdentities).where(eq(secretIdentities.userId, userId)).limit(1)
+        if (!identity || identity.identityKey !== req.body.identityKey) {
+          throw Object.assign(new Error('publish the current identity before topping up'), { statusCode: 409, code: 'identity-changed' })
+        }
+        await tx.insert(secretOneTimePrekeys)
+          .values(req.body.oneTimePrekeys.map((k) => ({ userId, keyId: k.keyId, pubKey: k.pubKey })))
+          .onConflictDoNothing()
+      })
       return reply.code(204).send(null)
     },
   )
@@ -95,7 +108,8 @@ export const keysRoutes: FastifyPluginAsyncZod = async (app) => {
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(secretOneTimePrekeys)
         .where(and(eq(secretOneTimePrekeys.userId, userId), isNull(secretOneTimePrekeys.consumedAt)))
-      return reply.code(200).send({ oneTimePrekeys: rows[0]?.count ?? 0 })
+      const [identity] = await db.select({ key: secretIdentities.identityKey }).from(secretIdentities).where(eq(secretIdentities.userId, userId)).limit(1)
+      return reply.code(200).send({ oneTimePrekeys: rows[0]?.count ?? 0, identityKey: identity?.key ?? null })
     },
   )
 
@@ -118,17 +132,10 @@ export const keysRoutes: FastifyPluginAsyncZod = async (app) => {
     async (req, reply) => {
       const target = req.params.userId
 
-      const idRows = await db
-        .select()
-        .from(secretIdentities)
-        .where(eq(secretIdentities.userId, target))
-        .limit(1)
-      const identity = idRows[0]
-      if (!identity) throw notFound('keys-not-found', 'user has no published keys')
-
-      // FOR UPDATE SKIP LOCKED + update в одной транзакции: два параллельных
-      // запроса бандла не выдадут один и тот же одноразовый ключ дважды.
-      const otp = await db.transaction(async (tx) => {
+      const { identity, otp } = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${'keys:' + target}, 0))`)
+        const [identity] = await tx.select().from(secretIdentities).where(eq(secretIdentities.userId, target)).limit(1)
+        if (!identity) throw notFound('keys-not-found', 'user has no published keys')
         const rows = await tx
           .select({ keyId: secretOneTimePrekeys.keyId, pubKey: secretOneTimePrekeys.pubKey })
           .from(secretOneTimePrekeys)
@@ -137,12 +144,12 @@ export const keysRoutes: FastifyPluginAsyncZod = async (app) => {
           .limit(1)
           .for('update', { skipLocked: true })
         const k = rows[0]
-        if (!k) return null
+        if (!k) return { identity, otp: null }
         await tx
           .update(secretOneTimePrekeys)
           .set({ consumedAt: new Date() })
           .where(and(eq(secretOneTimePrekeys.userId, target), eq(secretOneTimePrekeys.keyId, k.keyId)))
-        return k
+        return { identity, otp: k }
       })
 
       return reply.code(200).send({

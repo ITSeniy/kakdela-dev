@@ -1,3 +1,4 @@
+import { useAuthStore } from '../auth/store.js'
 // T-102 — pipeline секретных чатов (отправка / приём / контрол-конверты).
 //
 // Связывает три слоя:
@@ -71,8 +72,9 @@ export function fetchSecretPeers(): Promise<string[]> {
  */
 export async function initSecretChats(selfUserId: string): Promise<void> {
   await cryptoInit(selfUserId)
-  const { oneTimePrekeys } = await apiFetch<PrekeyCountResponse>('/api/keys/count')
-  if (oneTimePrekeys === 0) {
+  const local = await cryptoPublishKeys(0)
+  const { oneTimePrekeys, identityKey } = await apiFetch<PrekeyCountResponse>('/api/keys/count')
+  if (identityKey !== local.identityKey || oneTimePrekeys === 0) {
     await publishKeys()
   } else if (oneTimePrekeys < PREKEY_LOW_WATERMARK) {
     await topUpKeys()
@@ -90,11 +92,12 @@ export async function publishKeys(count = PREKEY_BATCH): Promise<void> {
 
 /** Долить one-time prekey'и в каталог. */
 export async function topUpKeys(count = PREKEY_BATCH): Promise<void> {
+  const { identityKey } = await cryptoPublishKeys(0)
   const oneTimePrekeys = await cryptoTopup(count)
   if (oneTimePrekeys.length === 0) return
   await apiFetch<void>('/api/keys/topup', {
     method: 'POST',
-    body: JSON.stringify({ oneTimePrekeys }),
+    body: JSON.stringify({ oneTimePrekeys, identityKey }),
   })
 }
 
@@ -176,12 +179,19 @@ interface DrainResult {
  * удалось расшифровать, НЕ ack'аются (останутся до следующего раза / retention).
  */
 async function drainOnce(): Promise<DrainResult> {
-  const { envelopes } = await apiFetch<SecretInboxResponse>('/api/secret/inbox')
+  const generation = useAuthStore.getState().generation
   const touchedPeers = new Set<string>()
+  let cursor: string | null = null
+  // Bound each pass; cursors advance even when a poison envelope cannot be ACKed.
+  for (let page = 0; page < 10; page += 1) {
+  if (useAuthStore.getState().generation !== generation) return { touchedPeers }
+  const inbox: SecretInboxResponse = await apiFetch<SecretInboxResponse>('/api/secret/inbox' + (cursor ? '?after=' + cursor : ''))
+  const { envelopes, nextCursor } = inbox
   const ackIds: string[] = []
 
   // Строго последовательно: prekey-конверт устанавливает сессию для следующих.
   for (const env of envelopes) {
+    if (useAuthStore.getState().generation !== generation) return { touchedPeers }
     try {
       // Уже обработанный конверт (креш между показом и ack — аудит M-10):
       // НЕ расшифровываем повторно — ratchet уже продвинулся, decrypt упал бы
@@ -192,6 +202,7 @@ async function drainOnce(): Promise<DrainResult> {
       }
 
       const plaintext = await cryptoDecrypt(env.fromUserId, env.ciphertext, env.msgType)
+      if (useAuthStore.getState().generation !== generation) return { touchedPeers }
       const frame = SecretFrameSchema.parse(JSON.parse(plaintext))
       if (frame.kind === 'text') {
         const added = await appendIncoming(env.fromUserId, frame.body, frame.ts, env.id)
@@ -217,8 +228,12 @@ async function drainOnce(): Promise<DrainResult> {
     }
   }
 
+  if (useAuthStore.getState().generation !== generation) return { touchedPeers }
   if (ackIds.length > 0) {
     await apiFetch<void>('/api/secret/ack', { method: 'POST', body: JSON.stringify({ ids: ackIds }) })
+  }
+  if (!nextCursor || nextCursor === cursor) break
+  cursor = nextCursor
   }
   return { touchedPeers }
 }
@@ -231,6 +246,7 @@ let rerunQueued = false
 let activeQueryClient: QueryClient | null = null
 
 function triggerDrain(queryClient: QueryClient): void {
+  if (activeQueryClient !== queryClient || !useAuthStore.getState().user) return
   if (draining) {
     rerunQueued = true
     return
@@ -264,6 +280,7 @@ function triggerDrain(queryClient: QueryClient): void {
  */
 export function startSecretChatListener(queryClient: QueryClient): () => void {
   activeQueryClient = queryClient
+  const retryTimer = setInterval(() => triggerDrain(queryClient), 30_000)
   const off = wsClient.on((event) => {
     if (event.t === 'secret.envelope' || event.t === 'ready') {
       triggerDrain(queryClient)
@@ -271,6 +288,8 @@ export function startSecretChatListener(queryClient: QueryClient): () => void {
   })
   return () => {
     off()
+    clearInterval(retryTimer)
+    rerunQueued = false
     activeQueryClient = null
   }
 }

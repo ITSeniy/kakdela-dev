@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm'
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
 import { z } from 'zod'
 
@@ -91,7 +91,7 @@ export const secretChatRoutes: FastifyPluginAsyncZod = async (app) => {
     '/secret/inbox',
     {
       preHandler: app.authenticate,
-      schema: { response: { 200: SecretInboxResponseSchema, 401: ErrorBodySchema } },
+      schema: { querystring: z.object({ after: z.string().uuid().optional() }), response: { 200: SecretInboxResponseSchema, 401: ErrorBodySchema } },
     },
     async (req, reply) => {
       const me = req.authUser!.id
@@ -104,12 +104,13 @@ export const secretChatRoutes: FastifyPluginAsyncZod = async (app) => {
           createdAt:  secretEnvelopes.createdAt,
         })
         .from(secretEnvelopes)
-        .where(eq(secretEnvelopes.toUserId, me))
+        .where(and(eq(secretEnvelopes.toUserId, me), req.query.after ? gt(secretEnvelopes.id, req.query.after) : undefined))
         .orderBy(asc(secretEnvelopes.id))
-        .limit(INBOX_LIMIT)
+        .limit(INBOX_LIMIT + 1)
 
       return reply.code(200).send({
-        envelopes: rows.map((r) => ({
+        nextCursor: rows.length > INBOX_LIMIT ? rows[INBOX_LIMIT - 1]!.id : null,
+        envelopes: rows.slice(0, INBOX_LIMIT).map((r) => ({
           id:         r.id,
           fromUserId: r.fromUserId,
           ciphertext: Buffer.from(r.ciphertext).toString('base64'),

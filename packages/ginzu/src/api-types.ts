@@ -1183,6 +1183,7 @@ export const PublishKeysRequestSchema = z.object({
 export type PublishKeysRequest = z.infer<typeof PublishKeysRequestSchema>
 
 export const TopupPrekeysRequestSchema = z.object({
+  identityKey: base64Key,
   oneTimePrekeys: z.array(OneTimePrekeySchema).min(1).max(200),
 })
 export type TopupPrekeysRequest = z.infer<typeof TopupPrekeysRequestSchema>
@@ -1200,6 +1201,7 @@ export const PrekeyBundleResponseSchema = z.object({
 export type PrekeyBundleResponse = z.infer<typeof PrekeyBundleResponseSchema>
 
 export const PrekeyCountResponseSchema = z.object({
+  identityKey: base64Key.nullable().optional(),
   oneTimePrekeys: z.number().int().nonnegative(),
 })
 export type PrekeyCountResponse = z.infer<typeof PrekeyCountResponseSchema>
@@ -1234,6 +1236,7 @@ export const SecretEnvelopeSchema = z.object({
 export type SecretEnvelope = z.infer<typeof SecretEnvelopeSchema>
 
 export const SecretInboxResponseSchema = z.object({
+  nextCursor: z.string().uuid().nullable().optional(),
   envelopes: z.array(SecretEnvelopeSchema),
 })
 export type SecretInboxResponse = z.infer<typeof SecretInboxResponseSchema>
