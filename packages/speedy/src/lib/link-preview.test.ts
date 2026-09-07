@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+vi.mock('./redis.js', () => ({ redis: { get: vi.fn().mockResolvedValue(null), set: vi.fn().mockResolvedValue('OK') } }))
 
 import { extractPreviewableUrls, isBlockedIp } from './link-preview.js'
 
@@ -29,7 +31,7 @@ describe('isBlockedIp — SSRF блок-лист', () => {
   })
 
   it('не путает Teredo с обычными глобальными 2001::/16', () => {
-    for (const ip of ['2001:4860:4860::8888', '2001:db8::1', '2606:2800:220:1:248:1893:25c8:1946']) {
+    for (const ip of ['2001:4860:4860::8888', '2606:2800:220:1:248:1893:25c8:1946']) {
       expect(isBlockedIp(ip), ip).toBe(false)
     }
   })
@@ -41,6 +43,9 @@ describe('isBlockedIp — SSRF блок-лист', () => {
   })
 
   it('мусор считает заблокированным (fail-closed)', () => {
+    for (const ip of ['::ffff:7f00:1', '::ffff:a00:1', '[::1]', '2001:db8::1', '192.0.2.1', 'fe80::1%eth0']) {
+      expect(isBlockedIp(ip), ip).toBe(true)
+    }
     for (const ip of ['not-an-ip', '', '999.999.999.999', '10']) {
       expect(isBlockedIp(ip), ip).toBe(true)
     }

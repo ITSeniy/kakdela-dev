@@ -1,3 +1,4 @@
+import { parseTrustedProxy } from './lib/trusted-proxy.js'
 import Fastify, { type FastifyError } from 'fastify'
 import { ZodTypeProvider, serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod'
 import cookie from '@fastify/cookie'
@@ -43,12 +44,7 @@ import { authPlugin } from './auth/middleware.js'
 import { wsPlugin } from './ws/server.js'
 
 async function main() {
-  // TRUST_PROXY='auto' → доверять X-Forwarded-For только в production
-  // (за Caddy). См. комментарий в env.ts.
-  const trustProxy =
-    env.TRUST_PROXY === 'auto'
-      ? env.NODE_ENV === 'production'
-      : env.TRUST_PROXY === 'true'
+  const trustProxy = parseTrustedProxy(env.TRUST_PROXY)
 
   const app = Fastify({ logger: makeLoggerOptions(), trustProxy }).withTypeProvider<ZodTypeProvider>()
 
@@ -77,7 +73,7 @@ async function main() {
 
   app.setErrorHandler((error: FastifyError, _req, reply) => {
     const statusCode = error.statusCode ?? 500
-    const code = error.code && !error.code.startsWith('FST_ERR_')
+    const code = statusCode < 500 && error.code && !error.code.startsWith('FST_ERR_')
       ? error.code
       : 'internal-error'
     app.log.error(error)

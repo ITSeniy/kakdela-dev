@@ -13,6 +13,7 @@ import https from 'node:https'
 import net from 'node:net'
 import { Buffer } from 'node:buffer'
 import zlib from 'node:zlib'
+import ipaddr from 'ipaddr.js'
 
 import type { LinkPreview } from '@kakdela/ginzu/api-types'
 
@@ -22,13 +23,16 @@ const MAX_PREVIEWS = 3              // не больше 3 карточек на
 const MAX_BYTES = 512 * 1024       // читаем максимум 512 КБ HTML (нам нужен <head>)
 const TIMEOUT_MS = 6_000           // на каждый хоп
 const MAX_REDIRECTS = 4
+const TOTAL_TIMEOUT_MS = 10_000
+const MAX_CONCURRENT_FETCHES = 8
+let activeFetches = 0
 // Браузероподобный UA: часть сайтов (в т.ч. YouTube) отдают пустую/консентную
 // страницу без OG-тегов «голым» ботам. Имитируем десктопный Chrome.
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
 // Кэш бампаем до v2 — поменялась логика (YouTube-embed, новый UA), старые
 // записи v1 не должны «залипнуть» негативным результатом по YouTube.
-const CACHE_PREFIX = 'lp:v2:'
+const CACHE_PREFIX = 'lp:v3:'
 const CACHE_TTL_OK_S = 24 * 3_600  // успешное превью — сутки
 const CACHE_TTL_MISS_S = 3_600     // «превью нет» — час (чтобы не долбить впустую)
 
@@ -83,10 +87,15 @@ function isPrivateV6(ip: string): boolean {
 
 /** true → адрес приватный/служебный, ходить туда нельзя (SSRF-защита). */
 export function isBlockedIp(ip: string): boolean {
-  const fam = net.isIP(ip)
-  if (fam === 4) return isPrivateV4(ip)
-  if (fam === 6) return isPrivateV6(ip)
-  return true
+  try {
+    const normalized = ip.replace(/^\[|\]$/g, '')
+    if (normalized.includes('%') || !net.isIP(normalized)) return true
+    const address = ipaddr.process(normalized)
+    if (address.range() !== 'unicast') return true
+    return address.kind() === 'ipv4'
+      ? isPrivateV4(address.toString())
+      : isPrivateV6(address.toString())
+  } catch { return true }
 }
 
 // Кастомный lookup: резолвим хост, валидируем ВСЕ адреса (защита от того, что
@@ -117,11 +126,15 @@ interface HopResult {
   body: Buffer
 }
 
-function fetchHop(target: string): Promise<HopResult> {
+function fetchHop(target: string, signal: AbortSignal): Promise<HopResult> {
   return new Promise((resolve, reject) => {
     let u: URL
     try { u = new URL(target) } catch { reject(new Error('bad-url')); return }
     if (u.protocol !== 'http:' && u.protocol !== 'https:') { reject(new Error('bad-protocol')); return }
+    const hostname = u.hostname.replace(/^\[|\]$/g, '')
+    if (u.username || u.password || (net.isIP(hostname) && isBlockedIp(hostname))) {
+      reject(new Error('blocked-ip')); return
+    }
 
     const mod = u.protocol === 'https:' ? https : http
     let settled = false
@@ -132,6 +145,8 @@ function fetchHop(target: string): Promise<HopResult> {
       {
         method: 'GET',
         lookup: safeLookup,
+        signal,
+        agent: false,
         timeout: TIMEOUT_MS,
         headers: {
           'user-agent': UA,
@@ -146,18 +161,18 @@ function fetchHop(target: string): Promise<HopResult> {
 
         // Редирект — не читаем тело, отдаём Location наверх (там ревалидация хопа).
         if (status >= 300 && status < 400 && res.headers.location) {
-          res.resume()
+          res.destroy()
           done(() => resolve({ status, location: String(res.headers.location), contentType, body: Buffer.alloc(0) }))
           return
         }
         // Прямая картинка: тело не качаем (может быть тяжёлым) — превью = сам URL.
         if (status === 200 && contentType.startsWith('image/')) {
-          res.resume()
+          res.destroy()
           done(() => resolve({ status, contentType, body: Buffer.alloc(0) }))
           return
         }
         if (status !== 200 || !/\b(text\/html|xhtml|text\/xml|application\/xml)\b/i.test(contentType)) {
-          res.resume()
+          res.destroy()
           done(() => resolve({ status, contentType, body: Buffer.alloc(0) }))
           return
         }
@@ -196,9 +211,14 @@ function fetchHop(target: string): Promise<HopResult> {
 
 /** Следуем за редиректами, ревалидируя каждый хоп (IP проверяется в lookup). */
 async function fetchFollowing(startUrl: string): Promise<{ finalUrl: string; res: HopResult } | null> {
+  if (activeFetches >= MAX_CONCURRENT_FETCHES) return null
+  activeFetches += 1
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), TOTAL_TIMEOUT_MS)
+  try {
   let current = startUrl
   for (let i = 0; i <= MAX_REDIRECTS; i += 1) {
-    const res = await fetchHop(current)
+    const res = await fetchHop(current, controller.signal)
     if (res.status >= 300 && res.status < 400 && res.location) {
       let next: string
       try { next = new URL(res.location, current).toString() } catch { return null }
@@ -208,6 +228,11 @@ async function fetchFollowing(startUrl: string): Promise<{ finalUrl: string; res
     return { finalUrl: current, res }
   }
   return null // слишком много редиректов
+  } finally {
+    clearTimeout(timer)
+    controller.abort()
+    activeFetches -= 1
+  }
 }
 
 // ───────────────────────── парсинг meta/OG ──────────────────────────────────

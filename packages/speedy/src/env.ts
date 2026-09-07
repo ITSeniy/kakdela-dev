@@ -8,13 +8,8 @@ const EnvSchema = z.object({
   SPEEDY_HOST: z.string().default('0.0.0.0'),
   SPEEDY_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
-  // За обратным прокси (Caddy в docker-сети) реальный IP клиента приходит в
-  // X-Forwarded-For. Без trustProxy Fastify считает IP'ом прокси: per-IP
-  // rate-limit вырождается в один бакет на всех, а в sessions.ipAddress у
-  // всех сессий пишется IP Caddy. 'auto' → доверять заголовкам в production
-  // (speedy наружу не публикуется, напрямую в него ходят только контейнеры
-  // kd-net), не доверять в dev (прямые localhost-соединения).
-  TRUST_PROXY: z.enum(['auto', 'true', 'false']).default('auto'),
+  // Explicit IP/CIDR list of reverse proxies; no blanket header trust.
+  TRUST_PROXY: z.string().default('false'),
 
   DATABASE_URL: z.string().min(1, 'нужен DATABASE_URL'),
   REDIS_URL: z.string().min(1, 'нужен REDIS_URL'),

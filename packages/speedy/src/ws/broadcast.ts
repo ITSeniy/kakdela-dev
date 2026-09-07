@@ -17,6 +17,14 @@ export async function broadcastToUser(userId: string, event: ServerEvent): Promi
 
 export function wireBrokerToRegistry(): void {
   broker.onMessage((topic, event) => {
+    if (event.t === 'member.leave') {
+      for (const conn of registry.forUser(event.userId)) {
+        registry.remove(conn)
+        conn.subscribedChannels.clear()
+        conn.subscribedServers.clear()
+        conn.close(4001, 'membership-changed')
+      }
+    }
     if (topic.startsWith('channel:')) {
       const channelId = topic.slice('channel:'.length)
       for (const conn of registry.forChannel(channelId)) {

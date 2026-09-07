@@ -20,7 +20,7 @@ const FIRST_SWEEP_DELAY_MS = 60 * 1000
 // msg.delete на каждое реально удалённое сообщение.
 const MAX_PER_BATCH = 1000
 
-async function sweepOnce(log: FastifyBaseLogger): Promise<void> {
+export async function sweepOnce(log: FastifyBaseLogger): Promise<void> {
   const chs = await db
     .select({ id: channels.id, sec: channels.autoDeleteSec })
     .from(channels)
@@ -46,15 +46,16 @@ async function sweepOnce(log: FastifyBaseLogger): Promise<void> {
       if (doomed.length === 0) break
       const ids = doomed.map((d) => d.id)
 
-      await db
+      const deleted = await db
         .update(messages)
         .set({ deletedAt: new Date(), content: '' })
-        .where(inArray(messages.id, ids))
+        .where(and(inArray(messages.id, ids), isNull(messages.deletedAt)))
+        .returning({ id: messages.id })
 
-      for (const id of ids) {
-        void broadcastToChannel(ch.id, { t: 'msg.delete', channelId: ch.id, messageId: id })
+      for (const { id } of deleted) {
+        await broadcastToChannel(ch.id, { t: 'msg.delete', channelId: ch.id, messageId: id })
       }
-      swept += ids.length
+      swept += deleted.length
       if (doomed.length < MAX_PER_BATCH) break
     }
     if (swept > 0) {
@@ -65,8 +66,13 @@ async function sweepOnce(log: FastifyBaseLogger): Promise<void> {
 
 /** Запускает периодический sweeper. Возвращает функцию остановки. */
 export function startAutoDeleteSweeper(log: FastifyBaseLogger): () => void {
+  let running = false
   const run = () => {
-    sweepOnce(log).catch((err) => log.error({ err }, 'auto-delete sweep failed'))
+    if (running) return
+    running = true
+    void sweepOnce(log)
+      .catch((err) => log.error({ err }, 'auto-delete sweep failed'))
+      .finally(() => { running = false })
   }
   const interval = setInterval(run, SWEEP_INTERVAL_MS)
   const first = setTimeout(run, FIRST_SWEEP_DELAY_MS)

@@ -51,7 +51,6 @@ class Registry {
     const conns = this.byUser.get(userId)
     if (!conns) return
     for (const conn of conns) {
-      if (!conn.subscribedServers.has(serverId)) continue
       conn.subscribedServers.delete(serverId)
       this.removeFromMap(this.byServer, serverId, conn)
       for (const channelId of channelIds) {

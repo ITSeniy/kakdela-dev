@@ -131,6 +131,9 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
     let conn: Connection | null = null
     let helloed = false
     let helloPending = false
+    let socketClosed = false
+    let frameWindow = Date.now()
+    let frameCount = 0
 
     const helloTimeout = setTimeout(() => {
       if (!helloed) {
@@ -139,6 +142,9 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
     }, HELLO_TIMEOUT_MS)
 
     socket.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
+      if (socketClosed) return
+      if (Date.now() - frameWindow >= 10_000) { frameWindow = Date.now(); frameCount = 0 }
+      if (++frameCount > 100) { socketClosed = true; socket.close(4429, 'message-rate-limit'); return }
       const text = Buffer.isBuffer(raw)
         ? raw.toString('utf8')
         : Array.isArray(raw)
@@ -173,6 +179,10 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
             return
           }
           helloed = true
+          if (socketClosed || socket.readyState !== 1) return
+          if (registry.forUser(result.conn.userId).length >= 10) {
+            socket.close(4429, 'too-many-user-connections'); return
+          }
           conn = result.conn
           clearTimeout(helloTimeout)
           registry.add(result.conn)
@@ -203,6 +213,7 @@ export const wsPlugin: FastifyPluginAsync = async (app) => {
     })
 
     socket.on('close', () => {
+      socketClosed = true
       releaseIpSlot(req.ip)
       clearTimeout(helloTimeout)
       if (conn) {
