@@ -1,27 +1,9 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import type { ScreenCodec, ScreenContent, ScreenQuality } from './screen-share-config.js'
 
-/**
- * Preset выбирается пользователем. На VPS с 2 vCPU и домашнем 50 Mbps upload
- * пять одновременных 1080p30 (3 Mbps × 5 = 15 Mbps) — впритык; поэтому дефолт
- * '720p30' (1.5 Mbps × 5 = 7.5 Mbps). 'auto' — публикуем simulcast layers,
- * SFU сам решает, что отдавать каждому зрителю.
- */
-export type ScreenQuality = 'auto' | '1080p30' | '720p30' | '720p15'
-
-export const SCREEN_QUALITY_LABELS: Readonly<Record<ScreenQuality, string>> = {
-  auto: 'авто',
-  '1080p30': '1080p · 30',
-  '720p30': '720p · 30',
-  '720p15': '720p · 15',
-}
-
-export const SCREEN_QUALITY_ORDER: readonly ScreenQuality[] = [
-  'auto',
-  '1080p30',
-  '720p30',
-  '720p15',
-]
+export { SCREEN_QUALITY_LABELS, SCREEN_QUALITY_ORDER } from './screen-share-config.js'
+export type { ScreenQuality } from './screen-share-config.js'
 
 /**
  * Источник нативного звука демки (Windows/WASAPI, T-094):
@@ -68,6 +50,8 @@ interface ScreenShareSettingsState {
    * и при «restart» в случае смены на лету.
    */
   screenQuality: ScreenQuality
+  screenContent: ScreenContent
+  screenCodec: ScreenCodec
   /**
    * Источник нативного звука демки (см. {@link AudioSource}). Дефолт — весь
    * системный звук; пользователь может сузить до конкретного приложения, чтобы
@@ -80,6 +64,8 @@ interface ScreenShareSettingsActions {
   setWithAudio(v: boolean): void
   setAudioCaptureSupported(v: boolean): void
   setScreenQuality(q: ScreenQuality): void
+  setScreenContent(content: ScreenContent): void
+  setScreenCodec(codec: ScreenCodec): void
   setAudioSource(s: AudioSource): void
 }
 
@@ -90,7 +76,9 @@ export const useScreenShareSettings = create<
     (set) => ({
       withAudio: true,
       audioCaptureSupported: null,
-      screenQuality: '720p30',
+      screenQuality: 'auto',
+      screenContent: 'text',
+      screenCodec: 'vp9',
       audioSource: { kind: 'auto' },
       setWithAudio(v) {
         set({ withAudio: v })
@@ -100,6 +88,12 @@ export const useScreenShareSettings = create<
       },
       setScreenQuality(q) {
         set({ screenQuality: q })
+      },
+      setScreenContent(screenContent) {
+        set({ screenContent })
+      },
+      setScreenCodec(screenCodec) {
+        set({ screenCodec })
       },
       setAudioSource(s) {
         set({ audioSource: s })

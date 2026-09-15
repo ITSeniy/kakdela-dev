@@ -19,6 +19,7 @@ import {
   useScreenShareSettings,
 } from './screenShareSettings.js'
 import { useAudioCaptureCapability } from './useAudioCaptureCapability.js'
+import { configForQuality } from './screen-share-config.js'
 
 interface ScreenSharePickerProps {
   onClose(): void
@@ -92,6 +93,11 @@ export function ScreenSharePicker({ onClose, onGoLive }: ScreenSharePickerProps)
   const setAudioSource = useScreenShareSettings((s) => s.setAudioSource)
   const screenQuality = useScreenShareSettings((s) => s.screenQuality)
   const setScreenQuality = useScreenShareSettings((s) => s.setScreenQuality)
+  const screenContent = useScreenShareSettings((s) => s.screenContent)
+  const setScreenContent = useScreenShareSettings((s) => s.setScreenContent)
+  const screenCodec = useScreenShareSettings((s) => s.screenCodec)
+  const setScreenCodec = useScreenShareSettings((s) => s.setScreenCodec)
+  const config = configForQuality(screenQuality, screenContent, screenCodec)
 
   const native = cap?.systemLoopback === true
   const [sessions, setSessions] = useState<AudioSessionEntry[]>([])
@@ -239,12 +245,28 @@ export function ScreenSharePicker({ onClose, onGoLive }: ScreenSharePickerProps)
         )}
 
         <div className="space-y-2">
+          <SectionLabel>содержимое</SectionLabel>
+          <div className="flex gap-3 text-[11px] text-kd-text">
+            {(['text', 'motion'] as const).map((content) => (
+              <label key={content} className="flex items-center gap-1.5 cursor-pointer">
+                <input type="radio" name="screen-content" checked={screenContent === content} onChange={() => setScreenContent(content)} />
+                {content === 'text' ? 'текст и работа' : 'игры и видео'}
+              </label>
+            ))}
+          </div>
+          <p className="text-[10px] text-kd-text-mute">
+            {screenContent === 'text' ? 'При нехватке скорости сохраняем детали изображения.' : 'При нехватке скорости сохраняем плавность движения.'}
+          </p>
+        </div>
+
+        <div className="space-y-2">
           <SectionLabel>качество</SectionLabel>
-          <div className="grid grid-cols-4 gap-1.5">
+          <div className="grid grid-cols-3 gap-1.5">
             {SCREEN_QUALITY_ORDER.map((q) => (
               <button
                 key={q}
                 type="button"
+                aria-pressed={q === screenQuality}
                 onClick={() => setScreenQuality(q)}
                 className={[
                   'px-2 py-2 rounded-kd border text-[11px] font-mono font-semibold transition-colors',
@@ -257,6 +279,21 @@ export function ScreenSharePicker({ onClose, onGoLive }: ScreenSharePickerProps)
               </button>
             ))}
           </div>
+          <p className="text-[10px] text-kd-text-mute">
+            До {config.capture.resolution?.height}p · {config.publish.screenShareEncoding?.maxFramerate} кадров/с · {Number(config.publish.screenShareEncoding?.maxBitrate) / 1_000_000} Мбит/с.
+            {' '}Фактическое качество зависит от источника, устройства и сети.
+          </p>
+          <details className="text-[10px] text-kd-text-soft">
+            <summary className="cursor-pointer">дополнительные настройки</summary>
+            <label className="flex items-center gap-2 mt-2">
+              Кодек видео
+              <select value={screenCodec} onChange={(e) => setScreenCodec(e.target.value === 'h264' ? 'h264' : 'vp9')} className="rounded-kd border border-kd-border bg-kd-panel px-2 py-1">
+                <option value="vp9">VP9</option>
+                <option value="h264">H.264</option>
+              </select>
+            </label>
+            <p className="mt-1">Если видео тормозит, сравните кодеки на своём устройстве.</p>
+          </details>
         </div>
       </div>
 

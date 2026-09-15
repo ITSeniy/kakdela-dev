@@ -1,20 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 
 import type { LocalVideoTrack, RemoteVideoTrack } from 'livekit-client'
 
 import { Avatar } from '../../components/Avatar.js'
 
-function formatQuality(track: LocalVideoTrack | RemoteVideoTrack): string | null {
-  // dimensions есть и у Local- и у RemoteVideoTrack, но в публичных типах
-  // SDK это не отражено. Читаем размеры через стандартный MediaTrackSettings
-  // — он одинаков для обеих сторон.
-  const settings = track.mediaStreamTrack?.getSettings()
-  const h = settings?.height
-  if (!h) return null
-  const tier = h >= 1080 ? '1080p' : h >= 720 ? '720p' : h >= 480 ? '480p' : `${h}p`
-  const fps = settings.frameRate
-  return fps ? `${tier} · ${Math.round(fps)}fps` : tier
-}
+import { ScreenShareDiagnostics } from './ScreenShareDiagnostics.js'
+import { useScreenShareStats } from './use-screen-share-stats.js'
 
 interface ScreenTileProps {
   displayName: string
@@ -92,7 +83,7 @@ export function ScreenTile({
 }: ScreenTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const [quality, setQuality] = useState<string | null>(null)
+  const { sample, history } = useScreenShareStats(screenTrack, videoRef, isSelf, !compact)
 
   useEffect(() => {
     const el = videoRef.current
@@ -102,21 +93,6 @@ export function ScreenTile({
       try { screenTrack.detach(el) } catch { /* SDK already detached */ }
     }
   }, [screenTrack])
-
-  // Dimensions заполняются не сразу — первые кадры могут прийти через 100-500ms
-  // после attach. Поллим раз в 250ms пока не получим валидный resolution.
-  useEffect(() => {
-    if (compact) return
-    let cancelled = false
-    function read() {
-      if (cancelled) return
-      const q = formatQuality(screenTrack)
-      if (q) { setQuality(q); return }
-      setTimeout(read, 250)
-    }
-    read()
-    return () => { cancelled = true }
-  }, [screenTrack, compact])
 
   const toggleFullscreen = (): void => {
     const container = containerRef.current
@@ -195,12 +171,7 @@ export function ScreenTile({
         </div>
       )}
 
-      {/* Quality badge — слева вверху, чтобы не пересекаться с hover-кнопками. */}
-      {!compact && quality && (
-        <div className="absolute left-1.5 top-1.5 px-1.5 py-0.5 rounded font-mono bg-kd-overlay-strong text-kd-stage-text opacity-70 text-[9px] pointer-events-none">
-          {quality}
-        </div>
-      )}
+      {!compact && <ScreenShareDiagnostics sample={sample} history={history} />}
 
       {/* Hover-оверлей с кнопками. Прячем opacity'ью, чтобы не дёргать DOM
           на каждое движение мыши. */}

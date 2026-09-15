@@ -385,7 +385,8 @@ function clearAllAttachedAudio(): void {
 // RTCStatsReport с локальных треков. collectVoiceStats() удобно дёрнуть прямо
 // из DevTools во время реального звонка (в dev доступна как window.kdVoiceStats):
 // packetsLost/jitter/rtt говорят про сеть, qualityLimitationReason —
-// 'bandwidth' = упор в исходящую полосу VPS, 'cpu' = в энкодер.
+// 'bandwidth' = ограничение отправитель→SFU, 'cpu' = в энкодер.
+// Статистика зрителя и его пути до SFU доступна в бейдже демонстрации.
 const connectionQuality = new Map<string, ConnectionQuality>()
 
 /** Последний известный ConnectionQuality участника (или свой, по identity). */
