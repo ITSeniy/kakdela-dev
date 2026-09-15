@@ -34,25 +34,20 @@ npm-debug.log*
 # --- Portfolio repository safety defaults ---
 # IDE and OS
 .vs/
-.idea/
 .vscode/*.user
 *.user
 *.suo
-.DS_Store
-Thumbs.db
 
 # Build outputs
 bin/
 obj/
 build/
 build-*/
-dist/
 out/
 target/
 Debug/
 Release/
 .next/
-node_modules/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -60,7 +55,6 @@ __pycache__/
 venv/
 
 # Local configuration and secrets
-.env
 .env.*
 !.env.example
 !.env.*.example
@@ -73,7 +67,6 @@ config.local.*
 !*.example.pem
 
 # Logs, caches, archives and generated executables
-*.log
 *.tmp
 *.cache
 *.dmp

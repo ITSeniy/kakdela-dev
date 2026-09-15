@@ -1,13 +1,13 @@
 # CONVENTIONS
 
-Эти правила Claude Code должен соблюдать **во всех** задачах. Если задача противоречит соглашениям — задача неправа, поправь её.
+Соглашения для работы с проектом. Указания пользователя задают scope задачи; при расхождении старой карточки с кодом сначала сверяй текущую реализацию и актуальную документацию.
 
 ## Языки и стек
 
 - **TypeScript везде** (никакого .js в /src/, кроме конфигов сборки).
 - **Strict mode** включён, `noUncheckedIndexedAccess: true`. Если хочется обойти — пиши комментарий «почему».
-- **Backend**: Node 20+, Fastify v5, drizzle-orm, zod для валидации.
-- **Frontend**: React 19, Vite, Tailwind, TanStack Query, Zustand, react-router 7.
+- **Backend**: Node 24, pnpm 9.12.0, Fastify v5, drizzle-orm, zod для валидации. Команды и требования — в [DEVELOPMENT](../docs/DEVELOPMENT.md).
+- **Frontend**: React 19, Vite, Tailwind, TanStack Query, Zustand, wouter.
 - **Desktop shell**: Tauri 2. Всё Rust-специфичное живёт **только** в `packages/polly/src-tauri/`. Не зависеть на Tauri API из бизнес-кода — изоляция через `packages/polly/src/lib/host/` (заглушки для web-dev, реальные вызовы для Tauri).
 - **Shared types**: всё, что пересекает границу client ↔ server, описывается в `@kakdela/ginzu`.
 
@@ -56,7 +56,7 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
 
 - Никогда не возвращай голый `500`. Любая ошибка должна стать `{ error: { code, message } }` через `app.setErrorHandler`.
 - Коды ошибок — kebab-case: `'message-not-found'`, `'rate-limited'`, `'invalid-credentials'`.
-- На клиенте — TanStack Query показывает toast с `error.message`. Не свой парсер на каждый запрос.
+- На клиенте — общий `ApiError`/`apiFetch` и toast из `polly/src/components/toast/`. TanStack Query сам по себе toast не показывает; не добавляй отдельный парсер ошибок в каждый запрос.
 
 ## Дизайн-токены
 
@@ -64,16 +64,19 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
 - Шрифты: `--kd-font` (Inter) для текста, `--kd-mono` (JetBrains Mono) для технических подписей (времена, размеры, IDs).
 - Радиус по умолчанию `--kd-radius` (6 px). Не «закругляй на глаз».
 
-## WebSocket
+## WebSocket приложения (`/ws`)
+
+Эти правила относятся к JSON-событиям приложения; LiveKit signaling использует отдельный протокол в `speedy/src/media/`.
 
 - Все сообщения — JSON, поле `t` = тип события (см. `@kakdela/ginzu/ws-events`).
 - Никаких бинарных кадров — простота важнее.
-- Подключение через `/ws?token=<jwt>` или (лучше) первым сообщением `{t:'hello',token}`.
+- Подключение через `/ws`, авторизация первым сообщением `{t:'hello',token}`. Токен в query string для прикладного WS не использовать.
+- Сохраняемые изменения идут по REST. WS принимает hello/ping/pong/typing/presence и доставляет события сервера; права доставки проверяются по PostgreSQL.
 
 ## Безопасность
 
 - Пароли — argon2id (пакет `@node-rs/argon2`, не `bcryptjs`).
-- JWT-секреты — из env, минимум 64 hex символа.
+- JWT-секреты — из env; для настройки генерировать отдельные случайные строки по 64 байта (128 hex символов). Текущий Zod минимум в `speedy/src/env.ts` — 32 символа, он не заменяет генерацию случайного секрета.
 - Контент-валидация — Zod на каждом эндпоинте.
 - Файлы — magic-byte проверка (`file-type` пакет), не только MIME из заголовка.
 - Markdown — рендер через `markdown-it` + санитизация DOMPurify. **Никогда** `dangerouslySetInnerHTML` без санитизации.
@@ -94,8 +97,8 @@ export const messagesRoutes: FastifyPluginAsyncZod = async (app) => {
 
 ## Что точно нельзя
 
-- ❌ Локальное состояние авторизации в Zustand. JWT — только в OS keychain через Tauri / httpOnly cookie в web-варианте.
+- ❌ Auth-токены напрямую в localStorage. Текущая сессия находится в Zustand; `features/auth/api.ts` также сохраняет user + access token через `host/secrets.ts`. Native refresh приходит в body, web refresh — обычно httpOnly-cookie. Фактический порядок keychain/IndexedDB/sessionStorage и отдельные ограничения secret-chat DEK описаны в [архитектуре](../ARCHITECTURE.md).
 - ❌ Эмодзи в логах сервера. Логи парсятся, эмодзи ломают грепы.
-- ❌ Использовать moment.js — берём `date-fns`.
+- ❌ Использовать moment.js. Для текущих операций с датами использовать существующие Date/Intl-хелперы; новую зависимость добавлять только при необходимости.
 - ❌ Создавать Redux. У нас TanStack Query + Zustand, этого хватает с запасом.
 - ❌ Тащить UI-киты (MUI, Chakra, shadcn). Дизайн уникальный, компоненты пишем сами по `designs/`.

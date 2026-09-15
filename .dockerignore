@@ -22,3 +22,10 @@ ops/backup/id_*
 designs
 tasks
 *.log
+
+# Локальные материалы и кэши, не нужные образам приложения.
+audit-evidence
+.cargo
+**/*.tsbuildinfo
+**/coverage
+docs/archive

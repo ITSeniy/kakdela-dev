@@ -2,6 +2,8 @@
 
 Пошаговая инструкция: от голого VPS до работающего чата с голосом, демо экрана и бэкапами. Рассчитана на Ubuntu 22.04/24.04, но подойдёт любой Linux с Docker.
 
+Документация сверена 2026-09-15; фактическое состояние VPS этой сверкой не проверялось. [Требования и локальные проверки](DEVELOPMENT.md) · [Открытые пункты аудита](../audit-fixes.md) · [Формат backup/restore](../ops/backup/README.md).
+
 ## Как это устроено
 
 > Обновление 3-B: public signaling теперь проходит через admission gateway speedy. Перед обновлением существующего окружения выполните порядок из [audit-admission.md](../audit-admission.md): прямой SFU 7880 должен быть закрыт, старые SFU-сессии — завершены в согласованное окно. Один reload Caddy не включает полную гарантию отзыва.
@@ -10,7 +12,7 @@
 
 | Файл | Сервисы | Зачем отдельно |
 |---|---|---|
-| `docker-compose.prod.yml` | postgres, redis, minio, livekit, backup | Данные. Поднимается один раз, при обновлениях не трогается. |
+| `docker-compose.prod.yml` | postgres, redis, minio, livekit, backup | Данные и медиа. Обновляется отдельно, когда меняются образы/конфиги этих сервисов. |
 | `docker-compose.app.yml` | speedy (backend), caddy (TLS + прокси + web-клиент) | Приложение. Пересобирается при каждом обновлении. |
 
 Caddy терминирует TLS (сертификаты Let's Encrypt получает сам) и маршрутизирует:
@@ -27,9 +29,9 @@ https://s3.<домен>/*       → minio:9000      файлы, аватарки
 
 ## 0. Что нужно заранее
 
-- **VPS**: 2 vCPU / 2 GB RAM / 20 GB диска — достаточно для 15–20 человек. Публичный IPv4.
+- **VPS**: исходный ориентир проекта — 2 vCPU / 2 GB RAM / 20 GB диска и публичный IPv4. Достаточность CPU, памяти и исходящей полосы проверить под реальными звонками/демо.
 - **Домен** и доступ к DNS.
-- Локально (для сборки desktop-клиента): этот репозиторий, Node 24, pnpm 9, Rust-тулчейн Tauri.
+- Локально (для сборки desktop-клиента): этот репозиторий, Node 24, pnpm 9.12.0, Rust-тулчейн Tauri и `protoc`. Windows prerequisites — в [DEVELOPMENT](DEVELOPMENT.md).
 
 ### DNS
 
@@ -175,13 +177,18 @@ curl https://<домен>/healthz
 
 1. Открой `https://<домен>` в браузере — это web-клиент.
 2. Зарегистрируйся с инвайт-кодом из шага 5.
-3. Сервер, созданный seed'ом, ничей — назначь себя владельцем (один раз):
+3. Сервер, созданный seed'ом, ничей. Подставь **UUID именно этого сервера** и свой зарегистрированный username; назначение владельца ограничено выбранным сервером:
 
 ```bash
 docker compose -f docker-compose.prod.yml exec postgres \
   psql -U kakdela -d kakdela -c \
-  "UPDATE servers SET owner_id = u.id FROM users u WHERE u.username = 'ТВОЙ_НИК' AND servers.owner_id IS NULL;
-   UPDATE server_members SET role = 'owner' WHERE user_id = (SELECT id FROM users WHERE username = 'ТВОЙ_НИК');"
+  "BEGIN;
+   UPDATE servers SET owner_id = u.id FROM users u
+   WHERE u.username = 'ТВОЙ_НИК' AND servers.id = '<UUID-из-seed>' AND servers.owner_id IS NULL
+   AND EXISTS (SELECT 1 FROM server_members sm WHERE sm.server_id = servers.id AND sm.user_id = u.id);
+   UPDATE server_members sm SET role = 'owner' FROM servers s
+   WHERE sm.server_id = s.id AND sm.user_id = s.owner_id AND s.id = '<UUID-из-seed>';
+   COMMIT;"
 ```
 
 Дальше инвайты для друзей создаются в UI (настройки сервера → инвайты), francine больше не нужен.
@@ -194,16 +201,16 @@ docker compose -f docker-compose.prod.yml exec postgres \
 # packages/polly/.env.production (файл в .gitignore) — свой домен:
 @"
 VITE_SPEEDY_URL=https://kakdela.example.com
-VITE_SPEEDY_WS_URL=wss://kakdela.example.com/ws
-VITE_LIVEKIT_URL=wss://kakdela.example.com/livekit
 "@ | Out-File -Encoding utf8 packages/polly/.env.production
 
-pnpm install
+pnpm install --frozen-lockfile
 pnpm --filter @kakdela/polly tauri:build
 # → packages/polly/src-tauri/target/release/bundle/nsis/*-setup.exe
 ```
 
 Раздай установщик `.exe` друзьям вместе с инвайт-кодом. Пока десктоп не собран, все могут пользоваться web-версией на `https://<домен>`.
+
+WS URL клиент выводит из HTTP backend, URL LiveKit получает от join API. `VITE_SPEEDY_WS_URL`/`VITE_LIVEKIT_URL` остаются в compose build args, но текущим runtime клиента не читаются; backend `LIVEKIT_URL` должен указывать на публичный `/livekit`.
 
 ### 8a. Автообновления десктопа (updater) — опционально
 
@@ -236,22 +243,23 @@ pnpm --filter @kakdela/polly tauri:build
 - [ ] Кастомный emoji загружается и рендерится
 - [ ] Голосовой канал: двое слышат друг друга (**проверь с разных сетей**, не два устройства за одним NAT)
 - [ ] Демо экрана видно второму участнику
-- [ ] Бэкап вручную: `docker compose -f docker-compose.prod.yml exec backup kd-backup`, файлы видны в `docker compose -f docker-compose.prod.yml exec backup ls /backups`
+- [ ] Бэкап вручную: `docker compose -f docker-compose.prod.yml exec backup kd-backup`, в `/backups/snapshot-*` есть COMPLETE и SHA256SUMS; восстановление отдельно проверено по [инструкции](../ops/backup/README.md).
+- [ ] Прямой SFU :7880 недоступен извне, старые прямые сессии закрыты; kick/leave и reconnect проверены по [пакету 3-B](../audit-admission.md).
 
 ## 10. Обновление
 
 ```bash
-cd kakdela && git pull
+cd kakdela
+# Сохранить рабочие данные до миграций/смены приложения:
+docker compose -f docker-compose.prod.yml exec backup kd-backup
+git pull
 
 docker compose -f docker-compose.app.yml build
 docker compose -f docker-compose.app.yml run --rm speedy pnpm francine migrate   # если были миграции
 docker compose -f docker-compose.app.yml up -d
-
-# Перед рискованными миграциями:
-docker compose -f docker-compose.prod.yml exec backup kd-backup
 ```
 
-Данные (`docker-compose.prod.yml`) при обновлениях кода не трогаются. `docker compose down` БЕЗ `-v` данные не удаляет; `-v` — удаляет всё.
+Обычное обновление приложения не пересоздаёт data-сервисы. Изменения LiveKit/backup/конфигов data-compose требуют отдельного шага; переход на admission gateway — порядка из [audit-admission.md](../audit-admission.md). `docker compose down` без `-v` сохраняет тома; `-v` удаляет тома соответствующего compose-проекта.
 
 ### Обновление старой инсталляции: появился блок `turn:`
 
@@ -291,8 +299,8 @@ docker compose -f docker-compose.prod.yml up -d livekit
 | Голос: подключается, но тишина | Почти всегда UDP. `ufw status` — открыт `7882/udp` (ICE-mux)? В `livekit.prod.yaml` стоит `use_external_ip: true`? После правок: `docker compose -f docker-compose.prod.yml restart livekit`. |
 | Голос рвётся/тишина у конкретного человека (а у других ок) | Его NAT не пускает прямой UDP — должен помочь TURN. `ufw status` — открыты `3478/udp` и `5349/tcp`? TURNS поднялся (см. §3a, серт + restart livekit)? В `docker logs kd-livekit` при старте есть строка про TURN. |
 | Демо/голос рассыпается у ВСЕХ сразу | Похоже на упор в исходящую полосу VPS. Во время демо открой DevTools на клиенте → `kdVoiceStats()` (dev-сборка): `qualityLimitationReason: 'bandwidth'` на screen-треке = не хватает egress сервера/аплоада. Снизь preset качества демки. |
-| Голос не подключается вообще | `docker logs kd-livekit`. `LIVEKIT_API_SECRET` в `.env` и `keys` в `livekit.prod.yaml` совпадают? |
-| `internal-error` при входе в голосовой канал | `docker logs kd-speedy`. Задан ли `LIVEKIT_ADMIN_URL=http://livekit:7880` в `.env`? Без него speedy пытается достучаться до admin-API LiveKit через публичный домен — изнутри docker-сети это hairpin, который обычно не проходит. |
+| Голос не подключается вообще | Проверить логи speedy и LiveKit, Caddy-маршрут `/livekit`, текущее членство и совпадение `LIVEKIT_API_SECRET` с `keys` SFU. Прямой обход gateway не использовать для восстановления доступа. |
+| Speedy не запускается или не может обратиться к SFU | В production обязателен `LIVEKIT_ADMIN_URL=http://livekit:7880`; без него конфигурация не проходит startup-validation. Публичный `LIVEKIT_URL` должен вести на `/livekit`. Оба контейнера должны видеть друг друга в `kd-net`. |
 | Presence в голосовом канале не обновляется | Webhook: в `docker logs kd-livekit` ошибки доставки на `http://speedy:3001/...`? Оба контейнера в сети `kd-net` (`docker network inspect kd-net`)? |
 | Поменял домен — клиент ходит на старый | `VITE_*` запечены в бандл: пересобери `kakdela/caddy` (и `.exe`-установщик). |
 
@@ -300,5 +308,5 @@ docker compose -f docker-compose.prod.yml up -d livekit
 
 - **TURN включён** (TURN/UDP `3478` + TURNS/TLS `5349`) — реле для симметричного NAT/строгого firewall. TURNS работает только после того, как Caddy выписал серт и livekit перезапущен (см. §3a); до этого момента остаётся TURN/UDP + TCP-fallback `7881`.
 - **Speedy работает на tsx** (как в dev), не на скомпилированном dist — ginzu экспортирует TS-исходники. Для 20 человек это не оверхед; «настоящая» сборка потребует билд-пайплайна для ginzu.
-- **MinIO доступен публично** через `s3.<домен>` — приватные файлы защищены только непредсказуемостью ключей (uuidv7). Для друзей — ок.
+- **URL вложений публичные** через `s3.<домен>`. Непредсказуемый UUID не проверяет право на скачивание: получивший ссылку может прочитать файл. Это открытый пункт №14 [аудита](../audit-fixes.md), а не гарантия приватности.
 - Серверные операции speedy с MinIO идут по внутренней сети (`S3_ENDPOINT=http://minio:9000`), клиентские ссылки — через `S3_PUBLIC_ENDPOINT`.
